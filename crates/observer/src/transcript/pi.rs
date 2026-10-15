@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use acc_core::event::{Event, ItemKind, Usage};
 use acc_core::harness::Harness;
+use acc_core::item::ItemFeed;
 use acc_core::ndjson::{Frame, LineFramer};
 use acc_core::pi::{MAX_LINE, add_usage, async_run, content_text, subagent_notify, tool_kind, user_text};
 use acc_core::state::{RunState, SessionState, StateSource};
@@ -33,6 +34,7 @@ pub fn session_dir(cwd: &str) -> String {
 /// out means waiting. pi never shows "blocked" in its transcript.
 #[derive(Debug)]
 pub struct Transcript {
+    items: ItemFeed,
     framer: LineFramer,
     open_tools: Vec<String>,
     /// Async pi-subagents runs not yet reported back, as in [`acc_core::pi::PiDriver`].
@@ -49,6 +51,7 @@ impl Default for Transcript {
 impl Transcript {
     pub fn new() -> Self {
         Self {
+            items: ItemFeed::new(Harness::Pi),
             framer: LineFramer::new(MAX_LINE),
             open_tools: Vec::new(),
             background: HashMap::new(),
@@ -74,6 +77,16 @@ impl Transcript {
         out
     }
 
+    /// [`Self::feed`] with `items` as the item feed, for readers whose items
+    /// mix with another reader's: a subagent's reader reports to its parent
+    /// call, so the parent's reader and its children share one feed.
+    pub fn feed_shared(&mut self, bytes: &[u8], items: &mut ItemFeed) -> Vec<Event> {
+        std::mem::swap(&mut self.items, items);
+        let out = self.feed(bytes);
+        std::mem::swap(&mut self.items, items);
+        out
+    }
+
     fn state(state: RunState, message: Option<String>, at: u64) -> Event {
         Event::StateChanged(SessionState {
             state,
@@ -96,20 +109,10 @@ impl Transcript {
                 let at = msg.get("timestamp").and_then(Value::as_u64).unwrap_or(0);
                 match msg.get("role").and_then(Value::as_str) {
                     Some("user") => {
-                        out.push(Event::ItemStarted {
-                            id: id.clone(),
-                            kind: ItemKind::UserMessage,
-                            parent: None,
-                            extensions: Value::Null,
-                        });
-                        out.push(Event::ItemDelta {
-                            id: id.clone(),
-                            text: user_text(msg.get("content")),
-                        });
-                        out.push(Event::ItemCompleted {
-                            id,
-                            extensions: Value::Null,
-                        });
+                        self.items
+                            .start(id.clone(), ItemKind::UserMessage, None, Value::Null, out);
+                        self.items.delta(id.clone(), user_text(msg.get("content")), out);
+                        self.items.complete(id, Value::Null, out);
                         out.push(Self::state(RunState::Working { progress: None }, None, at));
                     }
                     Some("assistant") => self.assistant(id, msg, at, out),
@@ -124,50 +127,48 @@ impl Transcript {
                         });
                         if let Some(run) = async_run(&str_field(msg, "toolName"), details, is_error) {
                             self.background.insert(run.to_owned(), call.clone());
-                            out.push(Event::ItemUpdated { id: call, extensions });
+                            self.items.update(call, extensions, out);
                         } else {
-                            out.push(Event::ItemCompleted { id: call, extensions });
+                            self.items.complete(call, extensions, out);
                         }
                     }
                     _ => {}
                 }
             }
-            Some("custom_message") => subagent_notify(&mut self.background, v, out),
+            Some("custom_message") => subagent_notify(&mut self.items, &mut self.background, v, out),
             _ => {}
         }
     }
 
     fn assistant(&mut self, id: String, msg: &Value, at: u64, out: &mut Vec<Event>) {
-        out.push(Event::ItemStarted {
-            id: id.clone(),
-            kind: ItemKind::AgentMessage,
-            parent: None,
-            extensions: Value::Null,
-        });
+        self.items
+            .start(id.clone(), ItemKind::AgentMessage, None, Value::Null, out);
         let text = content_text(msg.get("content"));
         if !text.is_empty() {
-            out.push(Event::ItemDelta { id: id.clone(), text });
+            self.items.delta(id.clone(), text, out);
         }
         let stop = msg.get("stopReason").and_then(Value::as_str).unwrap_or_default();
-        out.push(Event::ItemCompleted {
+        self.items.complete(
             id,
-            extensions: json!({
+            json!({
                 "provider": msg.get("provider"),
                 "model": msg.get("model"),
                 "stop_reason": stop,
             }),
-        });
+            out,
+        );
         for block in msg.get("content").and_then(Value::as_array).into_iter().flatten() {
             if block.get("type").and_then(Value::as_str) == Some("toolCall") {
                 let call = str_field(block, "id");
                 let tool = str_field(block, "name");
                 self.open_tools.push(call.clone());
-                out.push(Event::ItemStarted {
-                    id: call,
-                    kind: tool_kind(&tool),
-                    parent: None,
-                    extensions: json!({ "tool": tool, "args": block.get("arguments") }),
-                });
+                self.items.start(
+                    call,
+                    tool_kind(&tool),
+                    None,
+                    json!({ "tool": tool, "args": block.get("arguments") }),
+                    out,
+                );
             }
         }
         if let Some(u) = msg.get("usage") {

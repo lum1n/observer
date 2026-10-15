@@ -14,7 +14,6 @@ use acc_core::transcript::Item;
 use acc_wasm::AccExec;
 use observer::osc7501;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
 pub mod observe;
@@ -73,20 +72,8 @@ fn arg<T: for<'de> Deserialize<'de>>(value: JsValue, what: &str) -> Result<T, Js
         .map_err(|e| error("InvalidArgument", &format!("invalid {what}: {e}")))
 }
 
-/// An item as the core serializes it, plus its harness-independent `detail`.
-fn item_json(i: &Item, h: Harness) -> Value {
-    let mut v = serde_json::to_value(i).unwrap_or_default();
-    if let Some(o) = v.as_object_mut() {
-        o.insert(
-            "detail".into(),
-            serde_json::to_value(i.detail(h)).unwrap_or_default(),
-        );
-    }
-    v
-}
-
-fn items<'a>(it: impl Iterator<Item = &'a Item>, h: Harness) -> JsValue {
-    js(&it.map(|i| item_json(i, h)).collect::<Vec<Value>>())
+fn items<'a>(it: impl Iterator<Item = &'a Item>) -> JsValue {
+    js(&it.collect::<Vec<_>>())
 }
 
 /// Byte offsets and durations as JS numbers (exact up to 2^53).

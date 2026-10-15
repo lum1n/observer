@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use acc_core::event::{Event, ItemKind, Quota, QuotaWindow, Usage};
 use acc_core::harness::Harness;
+use acc_core::item::ItemFeed;
 use acc_core::ndjson::{Frame, LineFramer};
 use acc_core::shell::quote;
 use acc_core::state::{BlockKind, RunState, SessionState, StateSource};
@@ -44,6 +45,7 @@ pub fn thread_id_from_path(path: &str) -> Option<&str> {
 /// Turns rollout lines into transcript-sourced state, usage and quota events.
 #[derive(Debug)]
 pub struct Observer {
+    items: ItemFeed,
     framer: LineFramer,
     started: bool,
     state: Option<RunState>,
@@ -69,6 +71,7 @@ impl Default for Observer {
 impl Observer {
     pub fn new() -> Self {
         Self {
+            items: ItemFeed::new(Harness::Codex),
             framer: LineFramer::new(wire::MAX_FRAME),
             started: false,
             state: None,
@@ -84,6 +87,8 @@ impl Observer {
 
     /// A reader for a child thread's rollout, whose items belong to the
     /// `spawn_agent` call `parent` in the parent's transcript.
+    /// It reports to that call, so feed it with
+    /// [`Self::feed_shared`] and the parent reader's feed.
     pub fn for_child(parent: impl Into<String>) -> Self {
         Self {
             parent: Some(parent.into()),
@@ -130,6 +135,16 @@ impl Observer {
                 self.line(&v, &mut out);
             }
         }
+        out
+    }
+
+    /// [`Self::feed`] with `items` as the item feed, for readers whose items
+    /// mix with another reader's: a subagent's reader reports to its parent
+    /// call, so the parent's reader and its children share one feed.
+    pub fn feed_shared(&mut self, bytes: &[u8], items: &mut ItemFeed) -> Vec<Event> {
+        std::mem::swap(&mut self.items, items);
+        let out = self.feed(bytes);
+        std::mem::swap(&mut self.items, items);
         out
     }
 
@@ -227,7 +242,15 @@ impl Observer {
                 // Context Codex injects as user messages isn't the user's.
                 let injected = text.trim_start().starts_with('<') || text.starts_with("# AGENTS.md");
                 if !text.is_empty() && !(kind == ItemKind::UserMessage && injected) {
-                    whole_item(out, id, kind, self.parent.clone(), text, Value::Null);
+                    whole_item(
+                        &mut self.items,
+                        out,
+                        id,
+                        kind,
+                        self.parent.clone(),
+                        text,
+                        Value::Null,
+                    );
                 }
             }
             // 0.162 messages between agents; a child's final answer is
@@ -239,16 +262,14 @@ impl Observer {
                     && let Some(call) = field("Sender:").and_then(|s| self.paths.get(s))
                     && let Some((_, report)) = text.split_once("Payload:\n")
                 {
-                    out.push(Event::ItemUpdated {
-                        id: call.clone(),
-                        extensions: json!({"report": report}),
-                    });
+                    self.items.update(call.clone(), json!({"report": report}), out);
                 }
             }
             Some("reasoning") => {
                 let text = text_of("summary");
                 if !text.is_empty() {
                     whole_item(
+                        &mut self.items,
                         out,
                         id,
                         ItemKind::Reasoning,
@@ -321,12 +342,7 @@ impl Observer {
                         json!({"type": "dynamicToolCall", "tool": name, "arguments": arguments}),
                     )
                 };
-                out.push(Event::ItemStarted {
-                    id: call,
-                    kind,
-                    parent: None,
-                    extensions: ext,
-                });
+                self.items.start(call, kind, None, ext, out);
             }
             Some("function_call_output" | "custom_tool_call_output") => {
                 let Some(call) = owned(p, "call_id") else {
@@ -364,21 +380,19 @@ impl Observer {
                     if let Some(t) = thread {
                         ext["receiverThreadIds"] = json!([t]);
                     }
-                    out.push(Event::ItemCompleted {
-                        id: call,
-                        extensions: ext,
-                    });
+                    self.items.complete(call, ext, out);
                     return;
                 }
-                out.push(Event::ItemCompleted {
-                    id: call,
-                    extensions: json!({
+                self.items.complete(
+                    call,
+                    json!({
                         "aggregatedOutput": output,
                         "contentItems": output,
                         "exitCode": exit,
                         "status": if failed { "failed" } else { "completed" },
                     }),
-                });
+                    out,
+                );
             }
             _ => {}
         }
@@ -403,18 +417,20 @@ impl Observer {
                     self.children.insert(thread.clone(), call.clone());
                     self.child_order.push(thread.clone());
                 }
-                out.push(Event::ItemUpdated {
-                    id: call,
-                    extensions: json!({"receiverThreadIds": [thread], "model": item.get("model"),
+                self.items.update(
+                    call,
+                    json!({"receiverThreadIds": [thread], "model": item.get("model"),
                                        "childStatus": "running"}),
-                });
+                    out,
+                );
             }
             (kind, _) => {
                 if let Some(call) = self.children.get(&thread) {
-                    out.push(Event::ItemUpdated {
-                        id: call.clone(),
-                        extensions: json!({"childStatus": kind.unwrap_or("completed")}),
-                    });
+                    self.items.update(
+                        call.clone(),
+                        json!({"childStatus": kind.unwrap_or("completed")}),
+                        out,
+                    );
                 }
             }
         }
@@ -461,10 +477,11 @@ impl Observer {
         if let Some(parent) = &self.parent {
             // A child thread's turn ending is its parent call's report.
             if matches!(state, RunState::Done | RunState::Error) {
-                out.push(Event::ItemUpdated {
-                    id: parent.clone(),
-                    extensions: json!({"childStatus": if state == RunState::Done { "completed" } else { "errored" }}),
-                });
+                self.items.update(
+                    parent.clone(),
+                    json!({"childStatus": if state == RunState::Done { "completed" } else { "errored" }}),
+                    out,
+                );
             }
             self.state = Some(state);
             return;
@@ -554,8 +571,9 @@ mod tests {
         let cmd = t.get("c1").unwrap();
         assert_eq!(cmd.status, acc_core::transcript::ItemStatus::Failed);
         assert_eq!(
-            cmd.detail(Harness::Codex),
+            cmd.detail,
             acc_core::item::ItemDetail::Command {
+                tool: "commandExecution".into(),
                 command: "cargo test".into(),
                 cwd: Some("/w".into()),
                 output: "ok".into(),
@@ -673,7 +691,7 @@ mod tests {
             child: c,
             prompt,
             ..
-        } = item.detail(Harness::Codex)
+        } = item.detail.clone()
         else {
             panic!()
         };
@@ -739,7 +757,7 @@ mod tests {
             output,
             model,
             ..
-        } = t.get(spawn).unwrap().detail(Harness::Codex)
+        } = t.get(spawn).unwrap().detail.clone()
         else {
             panic!()
         };

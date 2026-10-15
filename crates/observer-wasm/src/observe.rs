@@ -10,7 +10,7 @@ use observer::takeover::{self, Takeover, TakeoverAction, TakeoverInput};
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
-use crate::{arg, error, exec, item_json, items, js, ms};
+use crate::{arg, error, exec, items, js, ms};
 
 /// A `ForeignAgent` as the core serializes it, plus `key` (stable while the
 /// process lives) and `pane_id` (`tmux:%3`, the label a takeover keeps).
@@ -121,20 +121,17 @@ impl AccObserved {
     /// The main conversation: items that didn't run inside a subagent.
     #[wasm_bindgen(js_name = topLevelItems)]
     pub fn top_level_items(&self) -> JsValue {
-        items(self.inner.transcript().top_level(), self.inner.agent().harness)
+        items(self.inner.transcript().top_level())
     }
 
     /// The child conversation of the `subagent` item `parent`.
     pub fn children(&self, parent: &str) -> JsValue {
-        items(
-            self.inner.transcript().children(parent),
-            self.inner.agent().harness,
-        )
+        items(self.inner.transcript().children(parent))
     }
 
     /// Every subagent run in the session.
     pub fn subagents(&self) -> JsValue {
-        items(self.inner.transcript().subagents(), self.inner.agent().harness)
+        items(self.inner.transcript().subagents())
     }
 
     /// Call every few seconds with the output of `alive_exec` and, when
@@ -182,12 +179,11 @@ impl AccObserved {
     }
 
     pub fn items(&self) -> JsValue {
-        items(self.inner.transcript().items().iter(), self.inner.agent().harness)
+        items(self.inner.transcript().items().iter())
     }
 
     pub fn item(&self, id: &str) -> JsValue {
-        let h = self.inner.agent().harness;
-        js(&self.inner.transcript().get(id).map(|i| item_json(i, h)))
+        js(&self.inner.transcript().get(id))
     }
 
     pub fn usage(&self) -> JsValue {

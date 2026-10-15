@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use acc_core::event::{Event, ItemKind, Usage};
 use acc_core::harness::Harness;
+use acc_core::item::ItemFeed;
 use acc_core::ndjson::{Frame, LineFramer};
 use acc_core::shell::quote;
 use acc_core::state::{RunState, SessionState, StateSource};
@@ -126,6 +127,7 @@ pub fn parse_subagents(stdout: &str) -> Vec<SubagentFile> {
 /// usage of its own, only the parent item's completion once its turn ends.
 #[derive(Debug)]
 pub struct Observer {
+    items: ItemFeed,
     framer: LineFramer,
     session_id: Option<String>,
     state: Option<RunState>,
@@ -153,6 +155,7 @@ impl Default for Observer {
 impl Observer {
     pub fn new() -> Self {
         Self {
+            items: ItemFeed::new(Harness::Claude),
             framer: LineFramer::new(wire::MAX_FRAME),
             session_id: None,
             state: None,
@@ -172,6 +175,8 @@ impl Observer {
 
     /// A reader for a subagent's transcript, whose items belong to the
     /// `Agent` call `parent`.
+    /// It reports to that call, so feed it with
+    /// [`Self::feed_shared`] and the parent reader's feed.
     pub fn for_subagent(parent: impl Into<String>) -> Self {
         Self {
             parent: Some(parent.into()),
@@ -227,6 +232,16 @@ impl Observer {
                 self.line(&v, &mut out);
             }
         }
+        out
+    }
+
+    /// [`Self::feed`] with `items` as the item feed, for readers whose items
+    /// mix with another reader's: a subagent's reader reports to its parent
+    /// call, so the parent's reader and its children share one feed.
+    pub fn feed_shared(&mut self, bytes: &[u8], items: &mut ItemFeed) -> Vec<Event> {
+        std::mem::swap(&mut self.items, items);
+        let out = self.feed(bytes);
+        std::mem::swap(&mut self.items, items);
         out
     }
 
@@ -333,7 +348,15 @@ impl Observer {
                         self.set(state, out);
                     }
                     let id = owned(v, "uuid").unwrap_or_else(|| format!("user-{}", text.len()));
-                    whole_item(out, id, ItemKind::UserMessage, parent.clone(), text, Value::Null);
+                    whole_item(
+                        &mut self.items,
+                        out,
+                        id,
+                        ItemKind::UserMessage,
+                        parent.clone(),
+                        text,
+                        Value::Null,
+                    );
                 }
             }
             Some("assistant") => {
@@ -350,32 +373,35 @@ impl Observer {
                                 if kind == "tool_use" && tracks_turn {
                                     self.pending_tools.insert(id.clone(), name.to_owned());
                                 }
-                                out.push(Event::ItemStarted {
+                                self.items.start(
                                     id,
-                                    kind: acc_core::claude::tool_kind(name),
-                                    parent: parent.clone(),
-                                    extensions: json!({
+                                    acc_core::claude::tool_kind(name),
+                                    parent.clone(),
+                                    json!({
                                         "name": name,
                                         "input": b.get("input").cloned().unwrap_or(Value::Null),
                                     }),
-                                });
+                                    out,
+                                );
                             }
                             // A server tool's result (`web_search_tool_result`, ...).
                             Some(kind) if kind.ends_with("_tool_result") => {
                                 let Some(id) = owned(b, "tool_use_id") else {
                                     continue;
                                 };
-                                out.push(Event::ItemCompleted {
+                                self.items.complete(
                                     id,
-                                    extensions: json!({
+                                    json!({
                                         "content": b.get("content").cloned().unwrap_or(Value::Null),
                                     }),
-                                });
+                                    out,
+                                );
                             }
                             Some("text") => {
                                 let text = str_at(b, "text").unwrap_or_default().to_owned();
                                 last_text = Some(text.clone());
                                 whole_item(
+                                    &mut self.items,
                                     out,
                                     format!("{uuid}:{i}"),
                                     ItemKind::AgentMessage,
@@ -385,6 +411,7 @@ impl Observer {
                                 );
                             }
                             Some("thinking") => whole_item(
+                                &mut self.items,
                                 out,
                                 format!("{uuid}:{i}"),
                                 ItemKind::Reasoning,
@@ -421,10 +448,11 @@ impl Observer {
                 match &self.parent {
                     // A subagent's final message is its report to the parent
                     // call, which a background launch's tool result left open.
-                    Some(p) if done => out.push(Event::ItemCompleted {
-                        id: p.clone(),
-                        extensions: json!({"task": {"status": "completed", "summary": last_text}}),
-                    }),
+                    Some(p) if done => self.items.complete(
+                        p.clone(),
+                        json!({"task": {"status": "completed", "summary": last_text}}),
+                        out,
+                    ),
                     Some(_) => {}
                     None if done && !self.background.is_empty() => self.set(RunState::Waiting, out),
                     None if done => self.set(RunState::Done, out),
@@ -448,10 +476,8 @@ impl Observer {
             return;
         }
         let failed = matches!(str_at(&task, "status"), Some("failed" | "stopped" | "killed"));
-        out.push(Event::ItemCompleted {
-            id: tool,
-            extensions: json!({"task": task, "is_error": failed}),
-        });
+        self.items
+            .complete(tool, json!({"task": task, "is_error": failed}), out);
         // The report wakes the model for another turn.
         if self.background.is_empty() && self.state == Some(RunState::Waiting) {
             self.set(RunState::Working { progress: None }, out);
@@ -493,17 +519,11 @@ impl Observer {
             ext["result"] = result.clone();
             if result.get("isAsync").and_then(Value::as_bool) == Some(true) {
                 self.background.push(id.to_owned());
-                out.push(Event::ItemUpdated {
-                    id: id.to_owned(),
-                    extensions: ext,
-                });
+                self.items.update(id.to_owned(), ext, out);
                 return;
             }
         }
-        out.push(Event::ItemCompleted {
-            id: id.to_owned(),
-            extensions: ext,
-        });
+        self.items.complete(id.to_owned(), ext, out);
     }
 
     fn set(&mut self, state: RunState, out: &mut Vec<Event>) {
@@ -532,6 +552,7 @@ fn local_input(s: &str) -> bool {
 
 /// Announces an item that is complete when first seen.
 pub(crate) fn whole_item(
+    items: &mut ItemFeed,
     out: &mut Vec<Event>,
     id: String,
     kind: ItemKind,
@@ -539,16 +560,11 @@ pub(crate) fn whole_item(
     text: String,
     ext: Value,
 ) {
-    out.push(Event::ItemStarted {
-        id: id.clone(),
-        kind,
-        parent,
-        extensions: Value::Null,
-    });
+    items.start(id.clone(), kind, parent, Value::Null, out);
     if !text.is_empty() {
-        out.push(Event::ItemDelta { id: id.clone(), text });
+        items.delta(id.clone(), text, out);
     }
-    out.push(Event::ItemCompleted { id, extensions: ext });
+    items.complete(id, ext, out);
 }
 
 #[cfg(test)]
@@ -575,14 +591,16 @@ mod tests {
         use acc_core::transcript::{ItemStatus, Transcript};
         let mut main = Observer::new();
         let mut t = Transcript::new();
+        // The subagents' readers report to the parent's calls: one feed.
+        let mut items = ItemFeed::new(Harness::Claude);
         // The parent's lines up to the background launch: one agent running.
         let launch = SUB_PARENT.find("Async agent launched").unwrap();
         let cut = SUB_PARENT[launch..].find('\n').unwrap() + launch + 1;
-        for e in main.feed(&SUB_PARENT.as_bytes()[..cut]) {
+        for e in main.feed_shared(&SUB_PARENT.as_bytes()[..cut], &mut items) {
             t.apply(&e);
         }
         assert_eq!(main.background_agents(), 1);
-        for e in main.feed(&SUB_PARENT.as_bytes()[cut..]) {
+        for e in main.feed_shared(&SUB_PARENT.as_bytes()[cut..], &mut items) {
             t.apply(&e);
         }
         assert_eq!(main.background_agents(), 0, "the notification reports it back");
@@ -605,7 +623,7 @@ mod tests {
                 SUB_BG
             };
             let mut child = Observer::for_subagent(tool.clone());
-            for e in child.feed(file.as_bytes()) {
+            for e in child.feed_shared(file.as_bytes(), &mut items) {
                 assert!(
                     !matches!(e, Event::SessionStarted { .. } | Event::StateChanged(_)),
                     "{e:?}"
@@ -617,7 +635,7 @@ mod tests {
             assert_eq!(sub.status, ItemStatus::Completed, "{}", sub.id);
             let ItemDetail::Subagent {
                 agent, child, output, ..
-            } = sub.detail(Harness::Claude)
+            } = sub.detail.clone()
             else {
                 panic!()
             };
@@ -717,8 +735,8 @@ mod tests {
         let bash = &t.items()[3];
         assert_eq!(bash.status, acc_core::transcript::ItemStatus::Failed);
         assert!(matches!(
-            bash.detail(Harness::Claude),
-            acc_core::item::ItemDetail::Command { ref command, .. } if command.contains("acc-probe")
+            &bash.detail,
+            acc_core::item::ItemDetail::Command { command, .. } if command.contains("acc-probe")
         ));
     }
 

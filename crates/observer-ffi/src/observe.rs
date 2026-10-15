@@ -161,22 +161,19 @@ impl AccObserved {
     /// The main conversation: items that didn't run inside a subagent.
     pub fn top_level_items(&self) -> Vec<AccItem> {
         let o = lock(&self.inner);
-        let h = o.agent().harness;
-        o.transcript().top_level().map(|i| item(i, h)).collect()
+        o.transcript().top_level().map(item).collect()
     }
 
     /// The child conversation of the `Subagent` item `parent`.
     pub fn children(&self, parent: String) -> Vec<AccItem> {
         let o = lock(&self.inner);
-        let h = o.agent().harness;
-        o.transcript().children(&parent).map(|i| item(i, h)).collect()
+        o.transcript().children(&parent).map(item).collect()
     }
 
     /// Every subagent run in the session.
     pub fn subagents(&self) -> Vec<AccItem> {
         let o = lock(&self.inner);
-        let h = o.agent().harness;
-        o.transcript().subagents().map(|i| item(i, h)).collect()
+        o.transcript().subagents().map(item).collect()
     }
 
     /// Call every few seconds with the output of `alive_exec` and, when
@@ -223,14 +220,12 @@ impl AccObserved {
 
     pub fn items(&self) -> Vec<AccItem> {
         let o = lock(&self.inner);
-        let h = o.agent().harness;
-        o.transcript().items().iter().map(|i| item(i, h)).collect()
+        o.transcript().items().iter().map(item).collect()
     }
 
     pub fn item(&self, id: String) -> Option<AccItem> {
         let o = lock(&self.inner);
-        let h = o.agent().harness;
-        o.transcript().get(&id).map(|i| item(i, h))
+        o.transcript().get(&id).map(item)
     }
 
     pub fn usage(&self) -> AccUsage {

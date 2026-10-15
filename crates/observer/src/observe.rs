@@ -13,6 +13,7 @@ use acc_core::detached::{FeedEntry, FeedPath};
 use acc_core::driver::DriverError;
 use acc_core::event::{Event, Quota, Usage};
 use acc_core::harness::Harness;
+use acc_core::item::ItemFeed;
 use acc_core::session::{Update, completions};
 use acc_core::state::{BlockKind, RunState, SessionState, StateSource, StateTracker};
 use acc_core::transcript::Transcript;
@@ -84,11 +85,11 @@ impl Reader {
         }
     }
 
-    fn feed(&mut self, bytes: &[u8]) -> Vec<Event> {
+    fn feed(&mut self, bytes: &[u8], items: &mut ItemFeed) -> Vec<Event> {
         match self {
-            Reader::Claude(o) => o.feed(bytes),
-            Reader::Codex(o) => o.feed(bytes),
-            Reader::Pi(t) => t.feed(bytes),
+            Reader::Claude(o) => o.feed_shared(bytes, items),
+            Reader::Codex(o) => o.feed_shared(bytes, items),
+            Reader::Pi(t) => t.feed_shared(bytes, items),
         }
     }
 
@@ -158,6 +159,9 @@ pub struct Observed {
     replay_until: u64,
     tracker: StateTracker,
     transcript: Transcript,
+    /// One item feed for the transcript and its subagents' transcripts,
+    /// since a subagent's reader reports to its parent call.
+    items: ItemFeed,
     usage: Usage,
     quota: Option<Quota>,
     title: Option<String>,
@@ -192,6 +196,7 @@ impl Observed {
             offset: 0,
             tracker: StateTracker::new(STALE_MS),
             transcript: Transcript::new(),
+            items: ItemFeed::new(agent.harness),
             usage: Usage::default(),
             quota: None,
             title: None,
@@ -312,7 +317,7 @@ impl Observed {
             return Vec::new();
         };
         child.offset += bytes.len() as u64;
-        let events = child.reader.feed(bytes);
+        let events = child.reader.feed(bytes, &mut self.items);
         if !events.is_empty() {
             self.last_news_ms = now_ms;
         }
@@ -406,7 +411,7 @@ impl Observed {
         };
         let replay = self.offset < self.replay_until;
         self.offset += bytes.len() as u64;
-        let mut events = reader.feed(bytes);
+        let mut events = reader.feed(bytes, &mut self.items);
         if !events.is_empty() {
             self.last_news_ms = now_ms;
         }
@@ -455,7 +460,8 @@ impl Observed {
                 }
                 _ => {}
             }
-            out.extend(completions(self.transcript.settle(&event), replay));
+            let closed = self.transcript.settle(&event);
+            out.extend(completions(closed, &self.transcript, replay));
             let item = self.transcript.apply(&event);
             out.push(Update { event, item, replay });
         }
@@ -603,7 +609,8 @@ impl Observed {
             {
                 continue;
             }
-            out.extend(completions(self.transcript.settle(&event), false));
+            let closed = self.transcript.settle(&event);
+            out.extend(completions(closed, &self.transcript, false));
             out.push(Update {
                 event,
                 item: None,
