@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/observer", "crates/observer-ssh", "crates/observer-ffi", "crates/observer-wasm", "crates/observer-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+# acc is checked out next to this repository.
+acc-core = { path = "../acc/crates/acc-core" }
+acc-ssh = { path = "../acc/crates/acc-ssh" }
+acc-ffi = { path = "../acc/crates/acc-ffi" }
+acc-wasm = { path = "../acc/crates/acc-wasm" }
+observer = { path = "crates/observer" }
+observer-ssh = { path = "crates/observer-ssh" }
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+thiserror = "2"
+uniffi = "0.32"
+wasm-bindgen = "0.2"
+js-sys = { version = "0.3", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+panic = "unwind" # UniFFI catches panics at the FFI boundary; keep unwinding on.

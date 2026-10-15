@@ -1,0 +1,38 @@
+[package]
+name = "observer-ffi"
+description = "UniFFI bindings (Swift, Kotlin) for observer, next to acc-ffi's"
+version.workspace = true
+edition.workspace = true
+# acc-ssh (russh) needs 1.89.
+rust-version = "1.89"
+publish.workspace = true
+
+[lib]
+# The library contains acc-ffi too, so apps link one library for both.
+crate-type = ["lib", "cdylib", "staticlib"]
+name = "observer_ffi"
+
+[[bin]]
+# Generates Swift/Kotlin sources for acc-ffi and observer-ffi:
+# `cargo run -p observer-ffi --bin uniffi-bindgen -- generate ...`
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+acc-core.workspace = true
+acc-ffi.workspace = true
+acc-ssh.workspace = true
+observer.workspace = true
+observer-ssh.workspace = true
+serde_json.workspace = true
+uniffi = { workspace = true, features = ["tokio"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

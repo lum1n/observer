@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+# acc is a path dependency (`../acc`), so every job checks both repositories
+# out side by side and works in `observer/`.
+defaults:
+  run:
+    working-directory: observer
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: observer
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: observer
+      - run: cargo fmt -p observer -p observer-ssh -p observer-ffi -p observer-wasm -p observer-cli --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: observer
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: observer
+      - run: cargo test --workspace
+
+  # Drives real multiplexers with the commands observer builds.
+  multiplexers:
+    runs-on: ubuntu-latest
+    env:
+      ACC_REQUIRE_MUX: "1"
+      ZELLIJ_VERSION: 0.45.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: observer
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: observer
+      - name: Install tmux, screen and zellij
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux screen
+          curl -fsSL "https://github.com/zellij-org/zellij/releases/download/v${ZELLIJ_VERSION}/zellij-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar xz -C /usr/local/bin zellij
+          tmux -V; screen -v || true; zellij --version
+      - run: cargo test -p observer --test multiplexers
+
+  # Drives a real OpenSSH server with tmux behind it, through a proxy that drops connections.
+  ssh:
+    runs-on: ubuntu-latest
+    env:
+      ACC_REQUIRE_SSHD: "1"
+      ACC_REQUIRE_MUX: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: observer
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: observer
+      - name: Install OpenSSH server and tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server tmux
+      - run: cargo test -p observer-ssh -p observer-ffi
+
+  ffi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: observer
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: observer
+      - name: Python smoke test (acc-ffi and observer-ffi from one library)
+        run: |
+          cargo build -p observer-ffi --release
+          cargo run -p observer-ffi --features bindgen --bin uniffi-bindgen -- \
+            generate --library target/release/libobserver_ffi.so --language python --out-dir bindings/python/ffi
+          cp target/release/libobserver_ffi.so bindings/python/ffi/
+          touch bindings/python/ffi/__init__.py
+          python3 crates/observer-ffi/tests/smoke.py bindings/python/ffi
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: observer
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: observer
+      - run: cargo build -p observer-wasm --release --target wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          # Must match the wasm-bindgen version in Cargo.lock.
+          tool: wasm-bindgen@0.2.129
+      - name: Node smoke test (a foreign session through wasm)
+        run: |
+          wasm-bindgen --target nodejs --out-dir bindings/node \
+            target/wasm32-unknown-unknown/release/observer_wasm.wasm
+          node crates/observer-wasm/tests/smoke.mjs bindings/node
+      - name: Core must not depend on host-only code
+        run: cargo build -p observer --target wasm32-unknown-unknown

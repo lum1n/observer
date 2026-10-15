@@ -1,0 +1,21 @@
+[package]
+name = "observer-ssh"
+description = "Co-drives harness TUIs in multiplexer panes on a host over SSH, on acc-ssh"
+version.workspace = true
+edition.workspace = true
+# acc-ssh (russh) needs 1.89.
+rust-version = "1.89"
+publish.workspace = true
+
+[dependencies]
+acc-core.workspace = true
+acc-ssh.workspace = true
+observer.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
+
+[lints]
+workspace = true
