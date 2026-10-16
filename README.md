@@ -1,10 +1,11 @@
 # observer
 
 Harness sessions [acc](https://github.com/lum1n/acc) didn't start. acc drives the sessions it
-launches; observer handles the rest: Claude Code, Codex or pi TUIs a user started themselves, in a
-terminal or a tmux, zellij, screen or Rex pane. It finds them, follows them through the transcript
-files the harnesses write, reads their screens, types into their panes, and takes them over into
-ordinary acc sessions, which acc then drives like any other.
+launches; observer handles the rest: the TUIs of every harness acc drives (Claude Code, Codex,
+Copilot CLI, Cursor Agent, opencode and pi) that a user started themselves, in a terminal or a
+tmux, zellij, screen or Rex pane. It finds them, follows them through the transcripts the harnesses
+keep (opencode's through its own server), reads their screens, types into their panes, and takes
+them over into ordinary acc sessions, which acc then drives like any other.
 
 Everything it reports is in acc's vocabulary (events, transcript items, states, launch requests),
 so a client shows a foreign session with the same code as an acc session. Like acc, it needs
@@ -14,7 +15,7 @@ nothing installed on the hosts: every action is a shell script for an SSH exec c
 
 | Crate | What it is |
 |---|---|
-| `crates/observer` | Sans-IO core on acc-core: discovery, transcript readers (Claude, Codex, pi), observation, takeover and hand-back, multiplexer backends (tmux, zellij, screen, Rex) with TUI keystrokes and screen matching, OSC 7501 |
+| `crates/observer` | Sans-IO core on acc-core: discovery, transcript readers (Claude, Codex, Copilot, Cursor, opencode, pi), observation, takeover and hand-back, multiplexer backends (tmux, zellij, screen, Rex) with TUI keystrokes and screen matching, OSC 7501 |
 | `crates/observer-ssh` | Co-drives TUIs in panes over an `acc_ssh::Host` |
 | `crates/observer-ffi` | UniFFI bindings for Swift and Kotlin, built into one library with acc-ffi and using its types |
 | `crates/observer-wasm` | wasm-bindgen bindings for browsers and Node, built into one module with acc-wasm (a test keeps them level with observer-ffi) |
@@ -26,6 +27,10 @@ acc is a path dependency: check it out next to this repository (`../acc`).
 
 ```sh
 cargo test --workspace
+
+# The Cursor, Copilot and opencode TUIs live in tmux: found, followed, taken over,
+# resumed with acc and handed back (signed-in harnesses; spends a few model calls)
+cargo test -p observer --test live_tuis -- --ignored
 
 # Multiplexers, this shell's pane and harness session stores on this machine
 cargo run -q -p observer-cli -- doctor
@@ -62,9 +67,11 @@ cargo install --path crates/observer-cli   # puts `observer` in ~/.cargo/bin
 observer doctor
 ```
 
-**Resume a session headlessly.** `observer sessions <claude|codex|pi>` lists recent sessions on
-this machine with the `acc run` command that resumes each one. Quit the harness's own TUI first
-(Claude resumes per project, so run it from the session's directory):
+**Resume a session headlessly.** `observer sessions <claude|codex|copilot|cursor|pi>` lists recent
+sessions on this machine with the `acc run` command that resumes each one (for Cursor, the TUI's
+own: acc loads a Cursor TUI chat once a takeover has copied it to `agent acp`'s store; opencode
+lists its own with `opencode session list`). Quit the harness's own TUI first (Claude resumes per
+project, so run it from the session's directory):
 
 ```sh
 observer sessions claude

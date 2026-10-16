@@ -8,6 +8,15 @@ use std::time::SystemTime;
 use acc_core::Harness;
 use observer::multiplexer;
 use observer::transcript::codex as rollout;
+use observer::transcript::copilot;
+
+/// The working directory Copilot recorded for a session (`workspace.yaml`).
+fn copilot_cwd(events: &Path) -> Option<String> {
+    let yaml = std::fs::read_to_string(events.with_file_name("workspace.yaml")).ok()?;
+    yaml.lines()
+        .find_map(|l| l.strip_prefix("cwd: "))
+        .map(|c| c.trim_matches(['\'', '"']).to_owned())
+}
 
 const MULTIPLEXERS: [(&str, &str); 4] = [
     ("tmux", "-V"),
@@ -48,7 +57,13 @@ pub fn doctor() -> ExitCode {
     }
 
     println!("session stores (resumable sessions)");
-    for h in [Harness::Claude, Harness::Codex, Harness::Pi] {
+    for h in [
+        Harness::Claude,
+        Harness::Codex,
+        Harness::Copilot,
+        Harness::Cursor,
+        Harness::Pi,
+    ] {
         if let Some(root) = store(h) {
             let n = transcripts(h, &root).len();
             println!(
@@ -86,21 +101,27 @@ pub fn sessions(harness: Harness, limit: usize) -> ExitCode {
         let id = match harness {
             Harness::Claude => path.file_stem().map(|s| s.to_string_lossy().into_owned()),
             Harness::Codex => rollout::thread_id_from_path(&rel).map(str::to_owned),
+            Harness::Copilot => copilot::session_id_from_path(&rel).map(str::to_owned),
+            Harness::Cursor => path.file_stem().map(|s| s.to_string_lossy().into_owned()),
             // pi resumes by session file path.
             _ => Some(path.to_string_lossy().into_owned()),
         };
         let Some(id) = id else { continue };
         let age = now.duration_since(modified).map_or(0, |d| d.as_secs());
-        // Claude and pi name the directory after the working directory.
+        // Claude, Cursor and pi name the directory after the working
+        // directory; Copilot records it next to the session.
         let place = match harness {
             Harness::Codex => String::new(),
+            Harness::Copilot => copilot_cwd(&path).unwrap_or_default(),
             _ => rel.split('/').next().unwrap_or("").to_owned(),
         };
-        println!(
-            "{:>6}  acc run {} --resume {id}  {place}",
-            ago(age),
-            name(harness)
-        );
+        // acc loads a Cursor TUI chat only once a takeover copied it to
+        // `agent acp`'s own store, so offer the TUI's command.
+        let resume = match harness {
+            Harness::Cursor => format!("agent --resume {id}"),
+            h => format!("acc run {} --resume {id}", name(h)),
+        };
+        println!("{:>6}  {resume}  {place}", ago(age));
     }
     ExitCode::SUCCESS
 }
@@ -125,7 +146,10 @@ fn store(h: Harness) -> Option<PathBuf> {
                 .join("sessions"),
         ),
         Harness::Pi => Some(home.join(".pi/agent/sessions")),
-        _ => None,
+        Harness::Copilot => Some(home.join(copilot::SESSION_STATE)),
+        Harness::Cursor => Some(home.join(".cursor/projects")),
+        // opencode keeps them in its database: `opencode session list`.
+        Harness::Opencode => None,
     }
 }
 
@@ -146,9 +170,13 @@ fn transcripts(h: Harness, root: &Path) -> Vec<(PathBuf, SystemTime)> {
         }
     }
     let mut out = Vec::new();
-    // Codex nests rollouts by date (YYYY/MM/DD); Claude keeps subagent
-    // transcripts one level below the sessions, which must not count.
-    let depth = if h == Harness::Codex { 3 } else { 1 };
+    // Codex nests rollouts by date (YYYY/MM/DD), Cursor under
+    // <project>/agent-transcripts/<chat>/; Claude keeps subagent transcripts
+    // one level below the sessions, which must not count.
+    let depth = match h {
+        Harness::Codex | Harness::Cursor => 3,
+        _ => 1,
+    };
     walk(root, depth, &mut out);
     out
 }

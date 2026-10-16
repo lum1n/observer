@@ -160,7 +160,7 @@ mod tests {
     fn transcript_observer_only_for_file_backed_harnesses() {
         assert!(TranscriptObserver::new(Harness::Claude).is_ok());
         assert!(matches!(
-            TranscriptObserver::new(Harness::Copilot),
+            TranscriptObserver::new(Harness::Opencode),
             Err(AccError::Unsupported { .. })
         ));
     }

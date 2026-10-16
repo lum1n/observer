@@ -49,11 +49,22 @@ pub fn inputs(harness: Harness, cmd: &Command) -> Result<Vec<Input>, DriverError
         (Harness::Pi | Harness::Claude | Harness::Codex, Command::Interrupt) => {
             Ok(vec![Input::Keys(vec![Key::Escape])])
         }
-        (Harness::Pi | Harness::Claude | Harness::Codex, Command::Compact { hint }) => {
+        // Escape only edits Copilot's queued prompt; Ctrl+C cancels the turn.
+        (Harness::Copilot, Command::Interrupt) => Ok(vec![Input::Keys(vec![Key::Ctrl('c')])]),
+        // Cursor puts the cancelled prompt back in the input.
+        (Harness::Cursor, Command::Interrupt) => Ok(vec![Input::Keys(vec![Key::Escape])]),
+        // opencode asks for a second Escape ("esc again to interrupt").
+        (Harness::Opencode, Command::Interrupt) => Ok(vec![
+            Input::Keys(vec![Key::Escape]),
+            Input::Keys(vec![Key::Escape]),
+        ]),
+        (Harness::Opencode, Command::Compact { .. }) => slash("/compact".into()),
+        (Harness::Pi | Harness::Claude | Harness::Codex | Harness::Copilot, Command::Compact { hint }) => {
             slash(with_arg("compact", hint.as_deref().unwrap_or("")))
         }
-        (Harness::Pi | Harness::Codex, Command::New) => slash("/new".into()),
-        (Harness::Claude, Command::New) => slash("/clear".into()),
+        (Harness::Pi | Harness::Codex | Harness::Opencode, Command::New) => slash("/new".into()),
+        (Harness::Claude | Harness::Copilot, Command::New) => slash("/clear".into()),
+        (Harness::Copilot, Command::Rename { name }) => slash(with_arg("rename", name)),
         (Harness::Pi, Command::Fork) => slash("/clone".into()),
         (Harness::Pi, Command::Rename { name }) => slash(with_arg("name", name)),
         (Harness::Pi | Harness::Claude, Command::Shell { command }) => slash(format!("!{command}")),
@@ -72,7 +83,7 @@ pub fn inputs(harness: Harness, cmd: &Command) -> Result<Vec<Input>, DriverError
             },
         ) => slash(with_arg("thinking", value)),
         (
-            Harness::Claude,
+            Harness::Claude | Harness::Copilot,
             Command::SetOption {
                 id: OptionId::Model,
                 value,
@@ -83,7 +94,6 @@ pub fn inputs(harness: Harness, cmd: &Command) -> Result<Vec<Input>, DriverError
             harness,
             "answering dialogs without the screen (use screen_match::answer)",
         )),
-        (h, Command::Interrupt) => Err(unsupported(h, "interrupt from a pane")),
         (h, _) => Err(unsupported(h, "this command from a pane")),
     }
 }
@@ -93,8 +103,13 @@ pub fn inputs(harness: Harness, cmd: &Command) -> Result<Vec<Input>, DriverError
 pub fn exit_inputs(harness: Harness) -> Result<Vec<Input>, DriverError> {
     match harness {
         Harness::Pi | Harness::Codex => Ok(submit("/quit")),
-        Harness::Claude => Ok(submit("/exit")),
-        h => Err(unsupported(h, "a known exit command")),
+        Harness::Claude | Harness::Copilot | Harness::Opencode => Ok(submit("/exit")),
+        // Clear what an interrupt put back in the input first.
+        Harness::Cursor => {
+            let mut keys = vec![Input::Keys(vec![Key::Ctrl('u')])];
+            keys.extend(submit("/quit"));
+            Ok(keys)
+        }
     }
 }
 
@@ -114,10 +129,12 @@ pub fn launch(harness: Harness, resume: Option<&str>) -> Result<Program, DriverE
                 program.args = vec!["--session".into(), path.into()];
             }
         }
-        (Harness::Claude, Some(id)) => program.args = vec!["--resume".into(), id.into()],
+        (Harness::Claude | Harness::Copilot | Harness::Cursor, Some(id)) => {
+            program.args = vec!["--resume".into(), id.into()];
+        }
         (Harness::Codex, Some(id)) => program.args = vec!["resume".into(), id.into()],
+        (Harness::Opencode, Some(id)) => program.args = vec!["--session".into(), id.into()],
         (_, None) => {}
-        (h, Some(_)) => return Err(unsupported(h, "resuming a TUI session by id")),
     }
     Ok(program)
 }
@@ -167,6 +184,13 @@ pub fn shows_approval(harness: Harness, screen: &str) -> bool {
             let tail = &tail[tail.len().saturating_sub(25)..];
             let question = tail.iter().position(|l| l.starts_with("Do you want to"));
             question.is_some_and(|q| tail[q..].iter().any(|l| l.starts_with("1. Yes")))
+        }
+        // "Run this command?" over "→ Run (once) (y)" ... "Skip & tell the
+        // agent what to do instead (esc or n)".
+        Harness::Cursor => {
+            let tail: Vec<&str> = screen.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            let tail = &tail[tail.len().saturating_sub(15)..];
+            tail.iter().any(|l| l.ends_with("(y)")) && tail.iter().any(|l| l.ends_with("(esc or n)"))
         }
         _ => false,
     }
@@ -229,8 +253,39 @@ mod tests {
             resume_inputs(Harness::Claude, "abc").unwrap()[0],
             Input::Text("claude --resume abc".into())
         );
-        assert!(launch(Harness::Cursor, Some("x")).is_err());
         assert_eq!(exit_inputs(Harness::Pi).unwrap()[0], Input::Text("/quit".into()));
+        assert_eq!(
+            launch(Harness::Cursor, Some("c1")).unwrap().argv(),
+            ["agent", "--resume", "c1"]
+        );
+        assert_eq!(
+            launch(Harness::Opencode, Some("ses_1")).unwrap().argv(),
+            ["opencode", "--session", "ses_1"]
+        );
+    }
+
+    #[test]
+    fn interrupt_and_exit_per_tui() {
+        let interrupt = |h| inputs(h, &Command::Interrupt).unwrap();
+        assert_eq!(interrupt(Harness::Copilot), [Input::Keys(vec![Key::Ctrl('c')])]);
+        assert_eq!(interrupt(Harness::Opencode).len(), 2, "esc twice");
+        // Cursor's interrupt leaves the prompt in the input: clear it first.
+        assert_eq!(
+            exit_inputs(Harness::Cursor).unwrap()[0],
+            Input::Keys(vec![Key::Ctrl('u')])
+        );
+        assert_eq!(
+            exit_inputs(Harness::Opencode).unwrap()[0],
+            Input::Text("/exit".into())
+        );
+    }
+
+    #[test]
+    fn cursor_approval_dialog_on_screen() {
+        let dialog = include_str!("../../tests/fixtures/screens/cursor-permission-shell.txt");
+        assert!(shows_approval(Harness::Cursor, dialog));
+        let working = include_str!("../../tests/fixtures/screens/cursor-working.txt");
+        assert!(!shows_approval(Harness::Cursor, working));
     }
 
     #[test]

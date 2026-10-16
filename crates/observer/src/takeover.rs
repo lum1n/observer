@@ -67,6 +67,9 @@ pub enum TakeoverStep {
     ClosingTui,
     WaitingForExit,
     Terminating,
+    /// Making the TUI's session loadable headless (Cursor's ACP server
+    /// keeps its sessions apart from the TUI's chats).
+    Preparing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +80,7 @@ enum Phase {
     Closed { at: u64 },
     Probing { since: u64 },
     Terminated,
+    Preparing,
     Done,
 }
 
@@ -92,19 +96,48 @@ pub struct Takeover {
 
 /// Why a foreign agent can't be taken over.
 pub fn takeover_blocker(agent: &ForeignAgent, native_id: Option<&str>) -> Option<String> {
-    if !matches!(agent.harness, Harness::Claude | Harness::Codex | Harness::Pi) {
-        return Some(format!(
-            "{} can't resume a TUI session headless yet",
-            agent.harness.display_name()
-        ));
-    }
-    if native_id.is_none() {
+    let Some(id) = native_id else {
         return Some("its session id isn't known yet".into());
+    };
+    if agent.harness == Harness::Cursor && !is_plain_id(id) {
+        return Some(format!("{id:?} doesn't look like a Cursor chat id"));
     }
     if agent.cwd.as_deref().is_none_or(str::is_empty) {
         return Some("its working directory isn't known".into());
     }
     None
+}
+
+fn is_plain_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// Where the Cursor TUI keeps chat `id`: `~/.cursor/chats/<md5 of cwd>/<id>`
+/// (2026.10), `~/.config/cursor/chats/...` before. Sets `$c`, or leaves it
+/// empty.
+fn cursor_chat_lookup(id: &str) -> String {
+    format!(
+        "c=; for d in \"$HOME\"/.cursor/chats/*/{id} \"$HOME\"/.config/cursor/chats/*/{id}; do [ -d \"$d\" ] && c=$d && break; done\n"
+    )
+}
+
+/// Script copying a Cursor TUI chat to where `agent acp` loads sessions
+/// from (`~/.cursor/acp-sessions/<id>`, same SQLite store). Prints `ok`.
+pub fn cursor_to_acp_script(id: &str) -> String {
+    format!(
+        "{lookup}[ -n \"$c\" ] || {{ echo missing; exit 0; }}\n\
+         a=\"$HOME/.cursor/acp-sessions\"; mkdir -p \"$a\" && rm -rf \"$a/{id}\" && cp -R \"$c\" \"$a/{id}\" && echo ok\n",
+        lookup = cursor_chat_lookup(id)
+    )
+}
+
+/// Script copying a Cursor chat ACC continued over ACP back to the TUI's
+/// chat store, so `agent --resume` sees the turns ACC added.
+pub fn cursor_from_acp_script(id: &str) -> String {
+    format!(
+        "a=\"$HOME/.cursor/acp-sessions/{id}\"\n{lookup}if [ -d \"$a\" ] && [ -n \"$c\" ]; then rm -rf \"$c\" && cp -R \"$a\" \"$c\"; fi\n",
+        lookup = cursor_chat_lookup(id)
+    )
 }
 
 fn join_execs(execs: Vec<Exec>) -> Exec {
@@ -154,6 +187,18 @@ impl Takeover {
 
     fn probe(&self) -> Exec {
         Exec::new(crate::observe::alive_script(self.agent.pid))
+    }
+
+    /// The TUI is gone: prepare its session where needed, then launch.
+    fn closed(&mut self) -> TakeoverAction {
+        if self.agent.harness == Harness::Cursor {
+            self.phase = Phase::Preparing;
+            return TakeoverAction::Run {
+                exec: Exec::new(cursor_to_acp_script(&self.native_id)),
+                step: TakeoverStep::Preparing,
+            };
+        }
+        self.launch()
     }
 
     fn launch(&mut self) -> TakeoverAction {
@@ -265,7 +310,7 @@ impl Takeover {
                 }
             }
             Phase::Probing { since } => match stdout.map(str::trim) {
-                Some("gone") => self.launch(),
+                Some("gone") => self.closed(),
                 Some(_) if now.saturating_sub(since) > EXIT_TIMEOUT_MS => {
                     self.phase = Phase::Terminated;
                     let pid = self.agent.pid;
@@ -285,7 +330,20 @@ impl Takeover {
                     step: TakeoverStep::WaitingForExit,
                 },
             },
-            Phase::Terminated => self.launch(),
+            Phase::Terminated => self.closed(),
+            Phase::Preparing => match stdout.map(str::trim) {
+                Some("ok") => self.launch(),
+                Some(_) => {
+                    self.phase = Phase::Done;
+                    TakeoverAction::Failed {
+                        reason: "the TUI closed, but its chat wasn't found to resume headless; resume it in the TUI".into(),
+                    }
+                }
+                None => TakeoverAction::Run {
+                    exec: Exec::new(cursor_to_acp_script(&self.native_id)),
+                    step: TakeoverStep::Preparing,
+                },
+            },
             Phase::Done => TakeoverAction::Failed {
                 reason: "takeover already finished".into(),
             },
@@ -356,6 +414,12 @@ pub fn hand_back_exec(
     let argv = tui::resume_argv(harness, native_id, launcher).ok()?;
     let command = acc_core::shell::join(argv.iter().map(String::as_str));
     let mut steps = Vec::new();
+    if harness == Harness::Cursor {
+        if !is_plain_id(native_id) {
+            return None;
+        }
+        steps.push(Exec::new(cursor_from_acp_script(native_id)));
+    }
     let typed = if command.len() > MAX_TYPED {
         let name: String = native_id
             .chars()
@@ -513,8 +577,57 @@ mod tests {
         assert!(exec.script.starts_with("kill -TERM 4242"));
         let mut cursor = agent(true);
         cursor.harness = Harness::Cursor;
-        assert!(Takeover::new(cursor, Some("x".into()), false).is_err());
+        assert!(Takeover::new(cursor, Some("x; rm -rf ~".into()), false).is_err());
         assert!(Takeover::new(agent(true), None, false).is_err());
+    }
+
+    #[test]
+    fn cursor_chat_is_copied_for_acp_before_launch() {
+        let mut a = agent(true);
+        a.harness = Harness::Cursor;
+        let mut t = Takeover::new(a, Some("c1-2".into()), false).unwrap();
+        let TakeoverAction::Run { exec, .. } = t.next(TakeoverInput::Tick {
+            now_ms: 0,
+            safe: true,
+        }) else {
+            panic!("close")
+        };
+        assert!(
+            exec.script.contains("C-u") && exec.script.contains("/quit"),
+            "{}",
+            exec.script
+        );
+        t.next(ran(100, ""));
+        let TakeoverAction::Run { exec, step } = t.next(ran(200, "gone\n")) else {
+            panic!("prepare")
+        };
+        assert_eq!(step, TakeoverStep::Preparing);
+        assert!(exec.script.contains("/.cursor/acp-sessions") && exec.script.contains("cursor/chats/*/c1-2"));
+        let TakeoverAction::Launch { request } = t.next(ran(300, "ok\n")) else {
+            panic!("launch")
+        };
+        assert_eq!(request.resume.as_deref(), Some("c1-2"));
+        // The chat goes back to the TUI's store on hand-back.
+        let back = hand_back_exec(Harness::Cursor, "c1-2", "tmux:%3", "/w", None).unwrap();
+        let (copy, typed) = back.script.split_once("send-keys").unwrap();
+        assert!(copy.contains("acp-sessions/c1-2") && typed.contains("agent --resume c1-2"));
+    }
+
+    #[test]
+    fn cursor_without_its_chat_fails_after_closing() {
+        let mut a = agent(false);
+        a.harness = Harness::Cursor;
+        let mut t = Takeover::new(a, Some("c1".into()), false).unwrap();
+        t.next(TakeoverInput::Tick {
+            now_ms: 0,
+            safe: true,
+        });
+        t.next(ran(100, ""));
+        t.next(ran(200, "gone"));
+        assert!(matches!(
+            t.next(ran(300, "missing")),
+            TakeoverAction::Failed { .. }
+        ));
     }
 
     #[test]

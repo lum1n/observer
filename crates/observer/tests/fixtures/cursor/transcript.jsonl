@@ -1,0 +1,6 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Friday, Oct 16, 2026, 3:26 PM (UTC+2)</timestamp>\n<user_query>\nRun the shell command 'echo bye > b.txt'.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Running that command now."},{"type":"tool_use","name":"Shell","input":{"command":"echo bye > b.txt","description":"Write bye to b.txt"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Done — `bye` was written to `b.txt`."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Friday, Oct 16, 2026, 3:27 PM (UTC+2)</timestamp>\n<user_query>\nSay ok.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}
+{"type":"turn_ended","status":"success"}

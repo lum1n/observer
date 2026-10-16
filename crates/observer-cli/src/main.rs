@@ -15,7 +15,7 @@ use observer::{discover, transcript};
 const USAGE: &str = "\
 usage:
   observer doctor                       multiplexers, this shell's pane and harness session stores
-  observer sessions <claude|codex|pi> [N]
+  observer sessions <claude|codex|copilot|cursor|pi> [N]
                                         recent sessions on this machine, with acc resume commands
   observer discover                     print a script listing harness TUIs on a host
                                         (pipe to `ssh host sh`, then to `observer decode discover`)
@@ -27,7 +27,7 @@ usage:
                                         keys: enter, escape, tab, up, down, left, right,
                                         backspace, c-<letter>, or one character such as 1)
   observer osc7501                      read terminal bytes on stdin, print OSC 7501 messages as JSON
-  observer decode pi-transcript|claude-transcript|codex-rollout
+  observer decode pi-transcript|claude-transcript|codex-rollout|copilot-events|cursor-transcript
                                         read a session file on stdin, print events
   observer decode screen <claude|pi>    read a captured pane on stdin, print its state and any
                                         open dialog as JSON (`null` when not recognized)
@@ -244,6 +244,26 @@ fn decode(kind: &str) -> ExitCode {
         "codex-rollout" => {
             let mut t = transcript::codex::Observer::new();
             Box::new(move |b| t.feed(b))
+        }
+        "copilot-events" => {
+            let mut t = transcript::copilot::Observer::new();
+            Box::new(move |b| t.feed(b))
+        }
+        // Read whole: Cursor's transcript is a snapshot, not a stream.
+        "cursor-transcript" => {
+            let mut text = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut text) {
+                eprintln!("observer: {e}");
+                return ExitCode::FAILURE;
+            }
+            let mut stdout = std::io::stdout().lock();
+            for ev in transcript::cursor::Transcript::new().feed_whole(&text) {
+                let line = serde_json::to_string(&ev).unwrap_or_default();
+                if writeln!(stdout, "{line}").is_err() {
+                    return ExitCode::FAILURE;
+                }
+            }
+            return ExitCode::SUCCESS;
         }
         _ => {
             eprint!("{USAGE}");

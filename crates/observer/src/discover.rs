@@ -92,6 +92,16 @@ ps -eo pid=,etime=,args= 2>/dev/null | while read -r pid etime args; do
       [ -n "$sid" ] && [ -f "$t" ] && printf 'F\t%s\t%s\t%s\n' "$pid" "$t" "$(wc -c <"$t" | tr -d ' ')" && break
     done
   fi
+  # Copilot locks the session it runs with inuse.<pid>.lock; its event log
+  # appears with the first prompt.
+  if [ "$b" = copilot ]; then
+    for l in "$HOME"/.copilot/session-state/*/inuse."$pid".lock; do
+      [ -f "$l" ] || continue
+      t="${l%/*}/events.jsonl"
+      printf 'F\t%s\t%s\t%s\n' "$pid" "$t" "$(wc -c <"$t" 2>/dev/null | tr -d ' ')"
+      break
+    done
+  fi
   if [ -d "/proc/$pid/fd" ]; then
     for f in /proc/$pid/fd/*; do readlink "$f" 2>/dev/null; done
   else
@@ -109,6 +119,12 @@ ps -eo pid=,etime=,args= 2>/dev/null | while read -r pid etime args; do
     n=$(ls -t "$d"/*.jsonl 2>/dev/null | head -n 1)
   elif [ "$b" = codex ]; then
     n=$(find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -mtime -2 2>/dev/null | while read -r f; do printf '%s\t%s\n' "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f")" "$f"; done | sort -rn | head -n 1 | cut -f2-)
+  elif [ "$b" = agent ] || [ "$b" = cursor-agent ]; then
+    n=$(ls -t "$HOME/.cursor/projects/$(e "${cwd#/}")/agent-transcripts"/*/*.jsonl 2>/dev/null | head -n 1)
+  elif [ "$b" = copilot ]; then
+    n=$(ls -td "$HOME"/.copilot/session-state/*/ 2>/dev/null | head -n 50 | while read -r s; do
+      if [ -f "${s}events.jsonl" ] && grep -Fqx "cwd: $cwd" "${s}workspace.yaml" 2>/dev/null; then printf '%sevents.jsonl\n' "$s"; break; fi
+    done)
   fi
   [ -n "$n" ] && printf 'N\t%s\t%s\t%s\n' "$pid" "$n" "$(wc -c <"$n" 2>/dev/null | tr -d ' ')"
 done
@@ -171,6 +187,7 @@ pub fn parse_discover(out: &str) -> Vec<ForeignAgent> {
     let mut labels: HashMap<String, String> = HashMap::new();
     let mut argv: HashMap<u32, Vec<String>> = HashMap::new();
     let mut ancestors: HashMap<u32, Vec<Vec<String>>> = HashMap::new();
+    let mut ancestor_pids: HashMap<u32, Vec<u32>> = HashMap::new();
     for line in out.lines() {
         let f: Vec<&str> = line.splitn(5, '\t').collect();
         let pid = || f.get(1).and_then(|p| p.trim().parse::<u32>().ok());
@@ -229,6 +246,9 @@ pub fn parse_discover(out: &str) -> Vec<ForeignAgent> {
             Some("W") => {
                 if let (Some(pid), Some(v)) = (pid(), f.get(3)) {
                     ancestors.entry(pid).or_default().push(split_argv(v));
+                    if let Some(q) = f.get(2).and_then(|q| q.trim().parse().ok()) {
+                        ancestor_pids.entry(pid).or_default().push(q);
+                    }
                 }
             }
             Some("P") if f.len() >= 3 => {
@@ -237,6 +257,21 @@ pub fn parse_discover(out: &str) -> Vec<ForeignAgent> {
             _ => {}
         }
     }
+    // A launcher that runs the harness as a child (npm's `copilot` script
+    // starting the native binary) shows up as the same harness: keep the
+    // innermost process, the one that writes the session.
+    let launchers: Vec<u32> = agents
+        .iter()
+        .flat_map(|a| {
+            let pids = ancestor_pids.get(&a.pid).map_or(&[][..], Vec::as_slice);
+            agents
+                .iter()
+                .filter(|b| b.harness == a.harness && pids.contains(&b.pid))
+                .map(|b| b.pid)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    agents.retain(|a| !launchers.contains(&a.pid));
     for a in &mut agents {
         if let Some(vars) = env.get(&a.pid) {
             a.pane = multiplexer::locate(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
@@ -253,6 +288,8 @@ pub fn parse_discover(out: &str) -> Vec<ForeignAgent> {
                 Harness::Claude => t.path.contains("/.claude/projects/"),
                 Harness::Codex => t.path.contains("/rollout-"),
                 Harness::Pi => t.path.contains("/.pi/agent/sessions/"),
+                Harness::Copilot => t.path.ends_with("/events.jsonl"),
+                Harness::Cursor => t.path.contains("/agent-transcripts/"),
                 _ => true,
             })
             .cloned();
@@ -392,7 +429,12 @@ fn native_id(a: &ForeignAgent) -> Option<String> {
         return Some(id);
     }
     let words: Vec<&str> = a.args.split_whitespace().collect();
-    for flag in ["--resume", "-r", "--session-id", "--session", "resume"] {
+    // `-s` is opencode's session; Codex's is its sandbox.
+    let short_session = (a.harness == Harness::Opencode).then_some("-s");
+    for flag in ["--resume", "-r", "--session-id", "--session", "resume"]
+        .into_iter()
+        .chain(short_session)
+    {
         if let Some(i) = words.iter().position(|w| *w == flag)
             && let Some(v) = words.get(i + 1)
             && !v.starts_with('-')
@@ -413,6 +455,8 @@ fn from_path(harness: Harness, path: &str) -> Option<String> {
             .and_then(|f| f.strip_suffix(".jsonl"))
             .map(str::to_owned),
         Harness::Codex => crate::transcript::codex::thread_id_from_path(path).map(str::to_owned),
+        Harness::Copilot => crate::transcript::copilot::session_id_from_path(path).map(str::to_owned),
+        Harness::Cursor => crate::transcript::cursor::chat_id_from_path(path).map(str::to_owned),
         _ => None,
     }
 }
@@ -526,6 +570,30 @@ P\t%3\twork:2\t/tmp/tmux-1000/default\n";
             "the open rollout is certain"
         );
         assert!(x.pane.is_none());
+    }
+
+    #[test]
+    fn copilot_is_its_native_binary_with_the_locked_session() {
+        let us = '\u{1f}';
+        let out = format!(
+            "A\t50\tcopilot\t00:10\tnode /n/.bin/copilot --resume 518f\n\
+             A\t51\tcopilot\t00:10\t/n/copilot-linux-x64/copilot --resume 518f\n\
+             V\t51\t/n/copilot-linux-x64/copilot{us}--resume{us}518f{us}\n\
+             W\t51\t50\tnode{us}/n/.bin/copilot{us}--resume{us}518f{us}\n\
+             W\t51\t49\tnpm exec @github/copilot{us}\n\
+             C\t51\t/w\n\
+             F\t51\t/home/v/.copilot/session-state/518fde60-17de-4177-9500-b278d6770baa/events.jsonl\t\n"
+        );
+        let found = parse_discover(&out);
+        assert_eq!(found.len(), 1, "npm's launcher is the same TUI");
+        let c = &found[0];
+        assert_eq!((c.harness, c.pid), (Harness::Copilot, 51));
+        let t = c.transcript.as_ref().unwrap();
+        assert!(t.exact && t.size == 0, "no prompt yet: the log isn't there");
+        assert_eq!(
+            c.native_id.as_deref(),
+            Some("518fde60-17de-4177-9500-b278d6770baa")
+        );
     }
 
     #[test]

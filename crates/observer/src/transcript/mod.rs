@@ -4,6 +4,9 @@
 
 pub mod claude;
 pub mod codex;
+pub mod copilot;
+pub mod cursor;
+pub mod opencode;
 pub mod pi;
 
 use acc_core::{Event, Harness};
@@ -14,6 +17,7 @@ use acc_core::{Event, Harness};
 pub enum Observer {
     Claude(claude::Observer),
     Codex(codex::Observer),
+    Copilot(copilot::Observer),
     Pi(pi::Transcript),
 }
 
@@ -23,8 +27,9 @@ impl Observer {
         match harness {
             Harness::Claude => Some(Self::Claude(claude::Observer::new())),
             Harness::Codex => Some(Self::Codex(codex::Observer::new())),
+            Harness::Copilot => Some(Self::Copilot(copilot::Observer::new())),
             Harness::Pi => Some(Self::Pi(pi::Transcript::new())),
-            Harness::Cursor | Harness::Copilot | Harness::Opencode => None,
+            Harness::Cursor | Harness::Opencode => None,
         }
     }
 
@@ -33,6 +38,7 @@ impl Observer {
         let mut events = match self {
             Self::Claude(o) => o.feed(bytes),
             Self::Codex(o) => o.feed(bytes),
+            Self::Copilot(o) => o.feed(bytes),
             Self::Pi(o) => o.feed(bytes),
         };
         for event in &mut events {
@@ -53,6 +59,6 @@ mod tests {
     #[test]
     fn observer_exists_for_file_backed_harnesses() {
         assert!(Observer::new(Harness::Claude).is_some());
-        assert!(Observer::new(Harness::Copilot).is_none());
+        assert!(Observer::new(Harness::Cursor).is_none());
     }
 }

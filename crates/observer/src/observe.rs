@@ -20,7 +20,7 @@ use acc_core::transcript::Transcript;
 
 use crate::discover::ForeignAgent;
 use crate::multiplexer::{self, Input, tui};
-use crate::transcript::{claude, codex, pi};
+use crate::transcript::{claude, codex, copilot, cursor, opencode, pi};
 
 /// After this long without news, a lower-fidelity state source may override.
 const STALE_MS: u64 = 30_000;
@@ -53,16 +53,45 @@ const CLAUDE_UNPROMPTED: &[&str] = &[
 enum Reader {
     Claude(claude::Observer),
     Codex(codex::Observer),
+    Copilot(copilot::Observer),
     Pi(pi::Transcript),
+    /// Polled through the probe: Cursor rewrites its transcript.
+    Cursor(cursor::Transcript),
+    /// Polled through the probe: opencode keeps no file to tail.
+    Opencode(opencode::Session),
 }
 
 impl Reader {
+    /// Read from the probe's output ([`Observed::tick`]) rather than a
+    /// followed file.
+    fn polled(&self) -> bool {
+        matches!(self, Reader::Cursor(_) | Reader::Opencode(_))
+    }
+
+    fn poll_script(&self, agent: &ForeignAgent) -> Option<String> {
+        match self {
+            Reader::Cursor(t) => Some(t.poll_script(&agent.transcript.as_ref()?.path)),
+            Reader::Opencode(s) => Some(s.poll_script()),
+            _ => None,
+        }
+    }
+
+    fn on_poll(&mut self, stdout: &str, items: &mut ItemFeed) -> Vec<Event> {
+        match self {
+            Reader::Cursor(t) => t.on_poll_shared(stdout, items),
+            Reader::Opencode(s) => s.on_poll_shared(stdout, items),
+            _ => Vec::new(),
+        }
+    }
+
     /// A reader for a subagent's transcript, under the item `parent`.
     fn for_child(&self, parent: String) -> Option<Reader> {
         match self {
             Reader::Claude(_) => Some(Reader::Claude(claude::Observer::for_subagent(parent))),
             Reader::Codex(_) => Some(Reader::Codex(codex::Observer::for_child(parent))),
-            Reader::Pi(_) => None,
+            // Copilot's subagents write to the session's own file, and
+            // opencode's are polled with the session.
+            _ => None,
         }
     }
 
@@ -71,7 +100,7 @@ impl Reader {
         match self {
             Reader::Claude(o) => o.take_new_agents(),
             Reader::Codex(o) => o.take_new_children(),
-            Reader::Pi(_) => Vec::new(),
+            _ => Vec::new(),
         }
     }
 
@@ -89,15 +118,20 @@ impl Reader {
         match self {
             Reader::Claude(o) => o.feed_shared(bytes, items),
             Reader::Codex(o) => o.feed_shared(bytes, items),
+            Reader::Copilot(o) => o.feed_shared(bytes, items),
             Reader::Pi(t) => t.feed_shared(bytes, items),
+            Reader::Cursor(_) | Reader::Opencode(_) => Vec::new(),
         }
     }
 
     fn pending_tools(&self) -> usize {
         match self {
             Reader::Claude(o) => o.pending_tools(),
+            Reader::Copilot(o) => o.pending_tools(),
             Reader::Pi(t) => t.pending_tools(),
-            Reader::Codex(_) => 0,
+            Reader::Opencode(s) => s.pending_tools(),
+            // Cursor writes a tool call once it has run.
+            Reader::Codex(_) | Reader::Cursor(_) => 0,
         }
     }
 
@@ -124,7 +158,12 @@ impl Reader {
     /// certain from the transcript alone (`false`: only the screen can tell
     /// a dialog from a slow tool).
     fn waiting_on(&self, bypass: bool) -> Option<(BlockKind, bool)> {
-        // pi has no approvals; Codex records its own.
+        // pi has no approvals; Codex, Copilot and opencode record their own.
+        // Cursor writes nothing until a step has run, so a quiet turn may
+        // be behind a dialog: only the screen tells.
+        if let Reader::Cursor(t) = self {
+            return (!bypass && t.turn_open()).then_some((BlockKind::Permission, false));
+        }
         let Reader::Claude(o) = self else { return None };
         let mut maybe = false;
         for name in o.pending_tool_names() {
@@ -179,6 +218,8 @@ pub struct Observed {
     /// they belong to.
     unlocated: Vec<(String, String)>,
     last_child_check_ms: Option<u64>,
+    /// A polled reader has had its first poll (the history).
+    polled: bool,
 }
 
 impl Observed {
@@ -186,8 +227,17 @@ impl Observed {
         let reader = agent.transcript.as_ref().and_then(|_| match agent.harness {
             Harness::Claude => Some(Reader::Claude(claude::Observer::new())),
             Harness::Codex => Some(Reader::Codex(codex::Observer::new())),
+            Harness::Copilot => Some(Reader::Copilot(copilot::Observer::new())),
             Harness::Pi => Some(Reader::Pi(pi::Transcript::new())),
-            _ => None,
+            Harness::Cursor => Some(Reader::Cursor(cursor::Transcript::new())),
+            Harness::Opencode => None,
+        });
+        // opencode's session comes from its server, not a file.
+        let reader = reader.or_else(|| {
+            (agent.harness == Harness::Opencode).then(|| {
+                let cwd = agent.cwd.as_deref().unwrap_or_default();
+                Reader::Opencode(opencode::Session::new(cwd, agent.native_id.clone()))
+            })
         });
         Self {
             replay_until: agent.transcript.as_ref().map_or(0, |t| t.size),
@@ -207,6 +257,7 @@ impl Observed {
             children: Vec::new(),
             unlocated: Vec::new(),
             last_child_check_ms: None,
+            polled: false,
             agent,
         }
     }
@@ -244,7 +295,7 @@ impl Observed {
                     .collect();
                 (!script.is_empty()).then(|| Exec::new(script))
             }
-            Reader::Pi(_) => None,
+            _ => None,
         }
     }
 
@@ -265,7 +316,7 @@ impl Observed {
                 .map(str::trim)
                 .filter_map(|p| Some((codex::thread_id_from_path(p)?.to_owned(), p.to_owned(), None)))
                 .collect(),
-            Reader::Pi(_) => Vec::new(),
+            _ => Vec::new(),
         };
         let mut added = false;
         for (id, path, tool) in found {
@@ -345,10 +396,13 @@ impl Observed {
         self.reader.is_some()
     }
 
-    /// The transcript to follow, from what has been read so far.
+    /// The transcript to follow, from what has been read so far. `None`
+    /// for Cursor and opencode, which [`Observed::probe_exec`] polls.
     pub fn feed_entry(&self) -> Option<FeedEntry> {
         let t = self.agent.transcript.as_ref()?;
-        self.reader.as_ref()?;
+        if self.reader.as_ref()?.polled() {
+            return None;
+        }
         Some(FeedEntry {
             key: self.agent.key(),
             path: FeedPath::File(t.path.clone()),
@@ -361,7 +415,10 @@ impl Observed {
     }
 
     pub fn is_replaying(&self) -> bool {
-        self.offset < self.replay_until
+        match &self.reader {
+            Some(r) if r.polled() => !self.polled,
+            _ => self.offset < self.replay_until,
+        }
     }
 
     pub fn is_alive(&self) -> bool {
@@ -411,7 +468,12 @@ impl Observed {
         };
         let replay = self.offset < self.replay_until;
         self.offset += bytes.len() as u64;
-        let mut events = reader.feed(bytes, &mut self.items);
+        let events = reader.feed(bytes, &mut self.items);
+        self.absorb(events, replay, now_ms)
+    }
+
+    /// Events from the reader, into the transcript, state and usage.
+    fn absorb(&mut self, mut events: Vec<Event>, replay: bool, now_ms: u64) -> Vec<Update> {
         if !events.is_empty() {
             self.last_news_ms = now_ms;
         }
@@ -453,6 +515,13 @@ impl Observed {
                         self.usage.output_tokens = u.output_tokens;
                         self.usage.input_tokens = u.input_tokens;
                     }
+                    if u.cache_read_tokens.is_some() || u.cache_write_tokens.is_some() {
+                        self.usage.cache_read_tokens = u.cache_read_tokens;
+                        self.usage.cache_write_tokens = u.cache_write_tokens;
+                    }
+                    if u.cost_usd.is_some() {
+                        self.usage.cost_usd = u.cost_usd;
+                    }
                 }
                 Event::Quota(q) => self.quota = Some(q.clone()),
                 Event::Native { kind, payload } if kind == "title" => {
@@ -479,6 +548,11 @@ impl Observed {
     /// A quiet outstanding tool call and what it may be waiting on.
     fn quiet_wait(&self, now_ms: u64) -> Option<(BlockKind, bool)> {
         if now_ms.saturating_sub(self.last_news_ms) < PROMPT_QUIET_MS {
+            return None;
+        }
+        // A quiet Cursor turn is mostly the model thinking: without a
+        // screen to check, don't guess.
+        if self.agent.harness == Harness::Cursor && self.agent.pane.is_none() {
             return None;
         }
         self.reader.as_ref()?.waiting_on(self.bypasses_permissions())
@@ -550,6 +624,17 @@ impl Observed {
             .then(|| self.reported_state(report, now_ms))
             .flatten();
         self.reports_status = reported.is_some();
+        let mut out = Vec::new();
+        // Cursor and opencode: the probe polled the session too.
+        if process_alive
+            && let Some(reader) = self.reader.as_mut()
+            && reader.polled()
+        {
+            let events = reader.on_poll(report, &mut self.items);
+            let replay = !self.polled;
+            self.polled = true;
+            out = self.absorb(events, replay, now_ms);
+        }
         let mut events = Vec::new();
         if !process_alive && self.alive {
             self.alive = false;
@@ -602,7 +687,6 @@ impl Observed {
                 _ => {}
             }
         }
-        let mut out = Vec::new();
         for event in events {
             if let Event::StateChanged(s) = &event
                 && !self.tracker.observe(s.clone())
@@ -623,7 +707,14 @@ impl Observed {
     /// Script for [`Observed::tick`]: whether the process runs, and what
     /// the harness reports about itself.
     pub fn probe_exec(&self) -> Exec {
-        Exec::new(probe_script(self.agent.harness, self.agent.pid))
+        let poll = self.reader.as_ref().and_then(|r| r.poll_script(&self.agent));
+        match poll {
+            Some(poll) => Exec::new(format!(
+                "if kill -0 {pid} 2>/dev/null; then echo alive\n{poll}else echo gone; fi\n",
+                pid = self.agent.pid
+            )),
+            None => Exec::new(probe_script(self.agent.harness, self.agent.pid)),
+        }
     }
 
     /// Execs that type `cmd` into the TUI's pane: prompts, interrupt, and
@@ -712,6 +803,66 @@ mod tests {
             native_id: None,
             launcher: None,
         }
+    }
+
+    fn polled_agent(harness: Harness, transcript: Option<&str>) -> ForeignAgent {
+        let mut a = agent(0);
+        a.harness = harness;
+        a.args = harness.program().into();
+        a.transcript = transcript.map(|p| TranscriptRef {
+            path: p.into(),
+            size: 0,
+            exact: false,
+        });
+        a
+    }
+
+    #[test]
+    fn cursor_is_polled_through_the_probe() {
+        let path = "/home/v/.cursor/projects/home-v-proj/agent-transcripts/c1/c1.jsonl";
+        let mut o = Observed::new(polled_agent(Harness::Cursor, Some(path)));
+        assert!(o.is_readable() && o.feed_entry().is_none());
+        let probe = o.probe_exec().script;
+        assert!(
+            probe.starts_with("if kill -0 42") && probe.contains("tail -c +1"),
+            "{probe}"
+        );
+        let file = "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>\\nhi\\n</user_query>\"}]}}\n\
+                    {\"type\":\"turn_ended\",\"status\":\"success\"}\n";
+        let ups = o.tick(1_000, &format!("alive\nS\t{}\n{file}", file.len()), None);
+        assert!(ups.iter().all(|u| u.replay) && !ups.is_empty());
+        assert!(!o.is_replaying());
+        assert_eq!(o.state().map(|s| &s.state), Some(&RunState::Done));
+        // The next probe reads from the last turn's trailer only.
+        let stable = file.find("{\"type\":\"turn_ended\"").unwrap() + 1;
+        assert!(o.probe_exec().script.contains(&format!("tail -c +{stable}")));
+        let again = o.tick(
+            2_000,
+            &format!("alive\nS\t{}\n{}", file.len(), &file[stable - 1..]),
+            None,
+        );
+        assert!(again.is_empty(), "no news: {again:?}");
+        assert!(o.at_safe_point());
+    }
+
+    #[test]
+    fn opencode_is_polled_through_its_server() {
+        let mut o = Observed::new(polled_agent(Harness::Opencode, None));
+        assert!(o.is_readable() && o.feed_entry().is_none());
+        assert!(o.probe_exec().script.contains("opencode api GET"));
+        let sessions =
+            r#"{"data":[{"id":"ses_a","location":{"directory":"/home/v/proj"},"time":{"updated":5}}]}"#;
+        o.tick(1_000, &format!("alive\nL\t{sessions}\n"), None);
+        assert_eq!(o.native_id(), Some("ses_a"));
+        let messages = r#"{"data":[{"id":"m1","type":"user","text":"hi"}]}"#;
+        let ups = o.tick(2_000, &format!("alive\nM:ses_a\t{messages}\n"), None);
+        assert!(ups.iter().any(|u| matches!(u.event, Event::ItemStarted { .. })));
+        assert!(matches!(
+            o.state().map(|s| &s.state),
+            Some(RunState::Working { .. })
+        ));
+        let gone = o.tick(3_000, "gone\n", None);
+        assert!(gone.iter().any(|u| matches!(u.event, Event::Exited { .. })));
     }
 
     #[test]

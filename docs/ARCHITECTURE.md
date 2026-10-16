@@ -3,8 +3,8 @@
 ## Goals and constraints
 
 - **Sessions acc didn't start.** acc drives the sessions it launches and knows nothing else.
-  observer covers harness TUIs (Claude Code, Codex, pi, and the rest where it can) that a user
-  started themselves, in a terminal or a tmux, zellij, screen or Rex pane: find them, follow them,
+  observer covers the TUIs of every harness acc drives (Claude Code, Codex, Copilot CLI, Cursor
+  Agent, opencode, pi) that a user started themselves, in a terminal or a tmux, zellij, screen or Rex pane: find them, follow them,
   co-drive their panes, and take them over into ordinary acc sessions.
 - **acc's vocabulary.** Everything observer reports is acc's: `acc_core::Event`s,
   `session::Update`s with acc's `Transcript`, `SessionState` with a ranked source, and a
@@ -20,7 +20,7 @@
 ```
             observer (Rust, sans-IO, on acc-core)
  ┌──────────────────────────────────────────────────────────────────┐
- │ discover   transcript (Claude, Codex, pi)   observe   takeover    │
+ │ discover   transcript (6 harnesses)   observe   takeover          │
  │ multiplexer (tmux, zellij, screen, Rex; tui keys, screen_match)   │
  │ osc7501                                                           │
  └──────────────┬──────────────────────────────┬────────────────────┘
@@ -35,14 +35,38 @@
 `discover` lists harness TUIs acc didn't start: process, working directory, multiplexer pane (from
 its environment), the wrapper it runs in (a `bwrap` sandbox, as an `acc_core::harness::Launcher`),
 and its transcript (an open file, else the newest in the harness's directory).
-`observe::Observed` follows that transcript (Claude, Codex and pi readers in `transcript` emit full
-conversation items, not just state), infers a waiting approval from a quiet outstanding tool call,
-and can type prompts into the pane. Its updates are acc's `session::Update`s over acc's
-`Transcript`, so items, subagents and usage look the same as an acc session's.
+`observe::Observed` follows that transcript (the readers in `transcript` emit full conversation
+items, not just state), infers a waiting approval from a quiet outstanding tool call where the
+transcript doesn't record approvals, and can type prompts into the pane. Its updates are acc's
+`session::Update`s over acc's `Transcript`, so items, subagents and usage look the same as an acc
+session's. The Copilot, Cursor and opencode readers shape tool calls like those harnesses' ACP
+servers report them, so acc's item details render them as they do a driven session's.
+
+| Harness | Where | Followed by | Approvals and questions |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects/<cwd>/<id>.jsonl` (`sessions/<pid>.json` names it) | tail | `sessions/<pid>.json` status, else a quiet call checked on screen |
+| Codex | `~/.codex/sessions/.../rollout-*-<thread>.jsonl` | tail | recorded in the rollout |
+| Copilot CLI | `~/.copilot/session-state/<id>/events.jsonl` (the TUI holds `inuse.<pid>.lock` there) | tail | `permission.requested`, `ask_user` calls |
+| Cursor Agent | `~/.cursor/projects/<cwd>/agent-transcripts/<id>/<id>.jsonl` | poll (`probe_exec`) | screen only: a quiet turn checked for the dialog |
+| opencode 2.x | its server, through `opencode api` | poll (`probe_exec`) | `/permission`, `/form` |
+| pi | `~/.pi/agent/sessions/--<cwd>--/*.jsonl` | tail | none |
+
+Two transcripts can't be tailed. Cursor rewrites its file: a new turn truncates it back to the start
+of the trailing `turn_ended` line, and a cancelled turn's lines are removed again, so a byte
+offset would resume mid-line. opencode keeps one SQLite database behind a background service its
+TUIs talk to. For both, `Observed::feed_entry` is `None` and `Observed::probe_exec` polls along with
+the liveness check: Cursor's from the last offset nothing rewrites, opencode's session, pending
+permissions and questions, and messages (only when the session moved or may be busy, plus running
+subagents' sessions). `Observed::tick` reads the result. Cursor's transcript is lossy too: no tool
+ids, results or usage, and a step is written once its tools have run.
 
 `takeover::Takeover` is the state machine for moving it into an acc session: wait for a safe point
 (or interrupt when forced), close the TUI the way a user would, confirm the process is gone, then
 hand the client a `LaunchRequest` resuming the harness's session id inside the TUI's own wrapper.
+Codex, Copilot and opencode resume over their headless protocol from the same store the TUI
+writes. Cursor's ACP server keeps its own (`~/.cursor/acp-sessions/<id>`, the same SQLite store as
+the TUI's `~/.cursor/chats/<md5 of cwd>/<id>`), so a Cursor takeover copies the chat there first
+(`TakeoverStep::Preparing`) and the hand-back copies it back before `agent --resume`.
 The client launches it as any acc session. The request's labels record where the TUI ran:
 `observer.pane` (the pane, as `tmux:%3`) and `observer.transcript`. acc stores them in `spec.json`
 and never reads them; `hand_back_session_exec` reads the pane label back and types the resume
@@ -73,13 +97,18 @@ installed.
 | Rex | `rex events --json`, native program-status records | yes, for every harness that emits it |
 
 `multiplexer::tui` turns acc commands into keystrokes for co-driving a harness TUI in its pane (pi
-fully; prompts, interrupt and common slash commands for Claude and Codex; never images, which only
-the headless protocols carry). `multiplexer::screen_match` reads what only shows on screen:
+fully; prompts, interrupt, exit, resume and common slash commands for the others; never images,
+which only the headless protocols carry). Interrupt is Escape, but Ctrl+C for Copilot (Escape
+edits its queued prompt) and Escape twice for opencode; Cursor puts an interrupted prompt back in
+the input, so its exit clears the line before `/quit`. `multiplexer::screen_match` reads what only shows on screen:
 Claude's permission, question and trust dialogs with their numbered options, and pi's busy state
-before pi 1.x. States from the screen carry `StateSource::ScreenMatch`, from OSC 7501
+before pi 1.x; `tui::shows_approval` spots Claude's and Cursor's approval dialogs. States from the screen carry `StateSource::ScreenMatch`, from OSC 7501
 `StateSource::Osc7501`, from transcripts `StateSource::Transcript`; acc's `StateTracker` ranks
 them. The Rex backend follows Rex's docs and is unverified until Rex ships a server outside the
 macOS app. Tests drive real tmux, zellij and screen in CI.
+`tests/live_tuis.rs` (ignored: signed-in harnesses, a few model calls) runs the Cursor, Copilot
+and opencode TUIs in tmux through discovery, observation, takeover, `acc run --resume` and
+hand-back.
 
 ### Panes over SSH (`observer-ssh`)
 

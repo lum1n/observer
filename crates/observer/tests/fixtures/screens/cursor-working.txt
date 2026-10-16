@@ -1,0 +1,45 @@
+  │                                                                                                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+  Cursor Agent
+  v2026.10.01-e373342
+  Tip: Use /plan to plan execution and reach the right outcome faster.
+
+
+  Run the shell command 'echo bye > b.txt'.
+
+
+  Running that command now.
+
+  $ echo bye > b.txt 11s
+
+  Done — bye was written to b.txt.
+
+
+  Write a 2000-word essay about the history of tea, directly in your reply.
+
+
+  A Long Steep: The History of Tea
+
+  Tea is one of the few beverages that can claim both daily intimacy and civilizational scale. Billions of people drink it for comfort, ritual, medicine, or
+  mere habit, yet its story stretches across millennia of agriculture, empire, religion, trade, and taste. To follow tea from a Chinese forest plant to a
+  global commodity is to follow the movement of people, ships, and ideas. What follows is a history of that journey—how a leaf became a language spoken in
+  cups from Hangzhou to London, Kyoto to Kolkata, Nairobi to Buenos Aires.
+
+  Origins in China
+
+  Most historians place tea’s botanical and cultural origins in southwest China, especially the region encompassing Yunnan and neighboring highland zones
+  where Camellia sinensis grows wild. The plant is an evergreen shrub; its leaves, when processed in different ways, yield green, white, oolong, black, and
+  dark fermented teas. Long before tea was a packaged product, it was a local resource: chewed, boiled
+
+ ⠠⠛ Working  345 tokens
+    Tip: Use /config to customize Cursor settings and behavior.
+
+
+  → Add a follow-up                                                                                                                             ctrl+c to stop
+
+
+  Auto · 6.3%
+  /tmp/obs-cu · master
+

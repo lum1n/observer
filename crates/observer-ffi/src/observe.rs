@@ -277,6 +277,8 @@ pub enum AccTakeoverStep {
     ClosingTui,
     WaitingForExit,
     Terminating,
+    /// Making the TUI's session loadable headless (Cursor).
+    Preparing,
 }
 
 impl From<TakeoverStep> for AccTakeoverStep {
@@ -287,6 +289,7 @@ impl From<TakeoverStep> for AccTakeoverStep {
             TakeoverStep::ClosingTui => Self::ClosingTui,
             TakeoverStep::WaitingForExit => Self::WaitingForExit,
             TakeoverStep::Terminating => Self::Terminating,
+            TakeoverStep::Preparing => Self::Preparing,
         }
     }
 }
