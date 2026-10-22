@@ -89,7 +89,8 @@ impl Dialog {
                 .collect(),
             kind: acc_core::state::BlockKind::Permission,
             item_id: None,
-            input: serde_json::Value::Null,
+            detail: None,
+            native: serde_json::Value::Null,
         }
     }
 }
