@@ -1,4 +1,4 @@
-//! Drives real tmux, zellij and screen servers with the commands the
+//! Drives real tmux, zellij, screen (and, ignored by default, Rex) servers with the commands the
 //! multiplexer backends build, run through `sh` exactly as an SSH exec
 //! channel would run them.
 //!
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use acc_core::Exec;
 use acc_core::state::{BlockKind, RunState};
 use observer::multiplexer::{
-    Backend, Input, Key, Multiplexer, PaneObserver, PaneRef, Program, Target, screen_match, tmux, zellij,
+    Backend, Input, Key, Multiplexer, PaneObserver, PaneRef, Program, Target, rex, screen_match, tmux, zellij,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -353,6 +353,132 @@ fn screen_end_to_end() {
     );
     env.run(&b.kill(&pane).unwrap());
     let _ = env.sh(&format!("screen -S {session} -X quit")).output();
+}
+
+/// Rex keeps one server per user, found through HOME, so this runs against
+/// the user's own server (a private HOME would autostart a second one) in a
+/// session of its own, killed at the end.
+#[test]
+#[ignore = "needs a running Rex server; creates and kills a session on it"]
+fn rex_end_to_end() {
+    let b = observer::multiplexer::backend(Multiplexer::Rex);
+    let home = std::env::var("HOME").unwrap();
+    let sh = |script: &str| {
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(script)
+            .env("HOME", &home)
+            .env_remove("REX_SERVER")
+            .env_remove("REX_SESSION")
+            .env_remove("REX_BLOCK");
+        c
+    };
+    let run = |exec: &Exec| {
+        let mut child = sh(&exec.script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&exec.stdin).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "`{}` failed: {}",
+            exec.script,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let name = format!("acc-rex-test-{}", std::process::id());
+    let server = Target {
+        multiplexer: Multiplexer::Rex,
+        server: String::new(),
+        session: None,
+    };
+    let first = b
+        .parse_spawned(&server, &name, &run(&b.spawn(&server, &shell(), "/tmp", &name)))
+        .unwrap();
+    let session = first.session.clone().unwrap();
+    assert!(session.starts_with("session:"), "{first:?}");
+    let target = Target {
+        session: Some(session.clone()),
+        ..server.clone()
+    };
+    let cleanup = Exec::new(format!(
+        "PATH=\"$PATH:$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS\"; rex kill {session}"
+    ));
+
+    let out = run(&b.spawn(&target, &shell(), "/tmp", "acc-1"));
+    let pane = b.parse_spawned(&target, "acc-1", &out).unwrap();
+    eventually("both blocks listed, the new one running sh", || {
+        let panes = b.parse_panes(&target, &run(&b.list_panes(&target))).unwrap();
+        panes.iter().any(|p| p.pane == first)
+            && panes.iter().any(|p| {
+                p.pane == pane
+                    && p.command.as_deref() == Some("sh")
+                    && p.cwd.as_deref() == Some("/private/tmp")
+            })
+    });
+    // Listing the whole server finds the session too.
+    let all = b.parse_panes(&server, &run(&b.list_panes(&server))).unwrap();
+    assert!(all.iter().any(|p| p.pane == pane), "{all:?}");
+
+    let watch = b.watch(&pane);
+    let mut child = sh(&watch.exec.script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    for e in type_line(b, &pane, REPORT) {
+        run(&e);
+    }
+    let mut lines = String::new();
+    eventually("a program_status_changed event for the block", || {
+        while let Ok(chunk) = rx.try_recv() {
+            lines.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        lines
+            .lines()
+            .filter_map(|l| rex::parse_event(l, 0))
+            .any(|e| match e {
+                rex::RexEvent::ProgramStatus { block, update } => {
+                    block == pane.pane
+                        && update.state.map(|s| s.state)
+                            == Some(RunState::Blocked {
+                                kind: BlockKind::Question,
+                            })
+                }
+                _ => false,
+            })
+    });
+
+    run(&b.send(&pane, &Input::Paste("echo one\necho two".into())));
+    eventually("pasted text on screen", || {
+        run(&b.capture(&pane, false)).contains("echo two")
+    });
+
+    run(&b.kill(&pane).unwrap());
+    eventually("the block gone", || {
+        !b.parse_panes(&target, &run(&b.list_panes(&target)))
+            .unwrap()
+            .iter()
+            .any(|p| p.pane == pane)
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    run(&cleanup);
 }
 
 #[test]

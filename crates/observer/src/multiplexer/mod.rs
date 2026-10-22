@@ -83,7 +83,7 @@ pub struct Target {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub pane: PaneRef,
-    /// The process the pane started (tmux only; zellij and Rex don't report it).
+    /// The process the pane started (tmux, and Rex: its terminal's child; zellij doesn't report it).
     pub pid: Option<u32>,
     /// Pane TTY (tmux only), for matching a harness by `ps -o tty`.
     pub tty: Option<String>,

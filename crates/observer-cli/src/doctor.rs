@@ -22,7 +22,7 @@ const MULTIPLEXERS: [(&str, &str); 4] = [
     ("tmux", "-V"),
     ("zellij", "--version"),
     ("screen", "-v"),
-    ("rex", "--version"),
+    ("rex", "version"),
 ];
 
 /// First output line of `program arg`, if the program runs at all.
