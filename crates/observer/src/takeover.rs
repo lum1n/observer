@@ -229,6 +229,7 @@ impl Takeover {
                 labels,
                 launcher: self.agent.launcher.clone(),
                 worktree: None,
+                sandbox: None,
             },
         }
     }
