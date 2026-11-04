@@ -449,6 +449,7 @@ impl Observer {
                     .pointer("/last_token_usage/total_tokens")
                     .and_then(Value::as_u64),
                 context_window: u64_at(info, "model_context_window"),
+                other_cost: None,
             }));
         }
         if let Some(limits) = p.get("rate_limits").filter(|r| !r.is_null()) {
@@ -657,6 +658,7 @@ mod tests {
                 cost_usd: None,
                 context_used: Some(53),
                 context_window: Some(258_400),
+                other_cost: None,
             })
         );
         let Event::Quota(q) = &events[1] else {
