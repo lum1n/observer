@@ -693,4 +693,123 @@ mod tests {
         assert!(p.active);
         assert!(!p.exited);
     }
+
+    fn pane(session: Option<&str>) -> PaneRef {
+        PaneRef {
+            multiplexer: Multiplexer::Rex,
+            server: String::new(),
+            session: session.map(str::to_owned),
+            pane: "block:1".into(),
+        }
+    }
+
+    #[test]
+    fn paste_is_bracketed_and_sent_on_stdin() {
+        let e = Rex.send(&pane(Some("work")), &Input::Paste("a\nb".into()));
+        assert_eq!(e.stdin, b"\x1b[200~a\nb\x1b[201~");
+        assert!(e.script.ends_with("rex send -s work -b block:1"));
+    }
+
+    #[test]
+    fn sessionless_commands_drop_the_scope_flag() {
+        let p = pane(None);
+        assert!(
+            Rex.capture(&p, false)
+                .script
+                .ends_with("rex capture -b block:1 --trim --unwrap")
+        );
+        assert!(Rex.watch(&p).exec.script.ends_with("rex events --json --all"));
+        assert!(matches!(
+            Rex.kill(&p),
+            Err(MuxError::Unsupported(Multiplexer::Rex, _))
+        ));
+    }
+
+    #[test]
+    fn new_session_spawn_uses_rex_new() {
+        let t = Target {
+            multiplexer: Multiplexer::Rex,
+            server: String::new(),
+            session: None,
+        };
+        let prog = Program {
+            program: "pi".into(),
+            args: vec!["--x".into()],
+            env: vec![],
+        };
+        let e = Rex.spawn(&t, &prog, "/src", "acc-1");
+        assert!(e.script.ends_with("rex new --json acc-1 --cwd /src -- pi --x"));
+    }
+
+    #[test]
+    fn parse_spawned_falls_back_to_the_name_and_rejects_bad_output() {
+        let t = Target {
+            multiplexer: Multiplexer::Rex,
+            server: String::new(),
+            session: None,
+        };
+        let p = Rex
+            .parse_spawned(&t, "acc-1", r#"{"block_ids":["block:2"]}"#)
+            .unwrap();
+        assert_eq!(p.session.as_deref(), Some("acc-1"));
+        assert!(matches!(
+            Rex.parse_spawned(&t, "acc-1", "not json"),
+            Err(MuxError::Parse(..))
+        ));
+        assert!(matches!(
+            Rex.parse_spawned(&t, "acc-1", r#"{"block_ids":[]}"#),
+            Err(MuxError::Parse(..))
+        ));
+    }
+
+    #[test]
+    fn parse_event_ignores_garbage_and_reads_simple_events() {
+        assert_eq!(parse_event("not json", 0), None);
+        assert_eq!(parse_event(r#"{"payload":{}}"#, 0), None);
+        assert_eq!(
+            parse_event(r#"{"type":"hello"}"#, 0),
+            Some(RexEvent::Other { name: "hello".into() })
+        );
+        let bell = wrap("bell", "null");
+        let ev = parse_event(&bell, 0).unwrap();
+        assert_eq!(
+            ev,
+            RexEvent::Bell {
+                block: "block:01b2".into()
+            }
+        );
+        assert_eq!(ev.block(), Some("block:01b2"));
+        assert_eq!(
+            parse_event(&wrap("title_changed", r#"{"title":"hi"}"#), 0),
+            Some(RexEvent::Title {
+                block: "block:01b2".into(),
+                title: "hi".into()
+            })
+        );
+        assert_eq!(
+            parse_event(&wrap("program_status_removed", r#"{"ids":["a","b"]}"#), 0),
+            Some(RexEvent::ProgramStatusRemoved {
+                block: "block:01b2".into(),
+                ids: vec!["a".into(), "b".into()]
+            })
+        );
+        let exit = wrap("child_exited", "{}");
+        assert_eq!(
+            parse_event(&exit, 0),
+            Some(RexEvent::ChildExited {
+                block: "block:01b2".into(),
+                code: None
+            })
+        );
+        assert_eq!(RexEvent::Other { name: "x".into() }.block(), None);
+    }
+
+    #[test]
+    fn key_names_cover_every_key() {
+        assert_eq!(key_name(Key::Ctrl('C')), "ctrl+c");
+        assert_eq!(key_name(Key::Enter), "enter");
+        assert_eq!(key_name(Key::Char('x')), "x");
+        assert_eq!(key_name(Key::Backspace), "backspace");
+        assert_eq!(key_name(Key::Up), "up");
+    }
 }
