@@ -62,6 +62,15 @@ ps -eo pid=,etime=,args= 2>/dev/null | while read -r pid etime args; do
   b=${1##*/}
   case $b in node|bun|deno|python*) b=${2##*/} ;; esac
   case $b in claude|codex|agent|cursor-agent|copilot|pi|opencode) ;; *) continue ;; esac
+  # ACC's detached harnesses: stdin is the session FIFO, and their pid is
+  # recorded under ~/.acc/s/*/pid. Pi rewrites its argv to just "pi", so
+  # headless `--mode rpc` is invisible to classify — skip them here.
+  stdin=$(readlink "/proc/$pid/fd/0" 2>/dev/null)
+  case $stdin in */.acc/s/*/in) continue ;; esac
+  for pfile in "$HOME"/.acc/s/*/pid; do
+    [ -f "$pfile" ] || continue
+    [ "$(tr -d ' \n' <"$pfile" 2>/dev/null)" = "$pid" ] && continue 2
+  done
   printf 'A\t%s\t%s\t%s\t%s\n' "$pid" "$b" "$etime" "$args"
   # Exact argv of the agent and of its ancestors (unit-separated), to find
   # a wrapper that execs into it (a bwrap sandbox, env, nice).
@@ -601,6 +610,10 @@ P\t%3\twork:2\t/tmp/tmux-1000/default\n";
         assert_eq!(classify("codex", "codex"), Some(Harness::Codex));
         assert_eq!(classify("codex", "codex app-server"), None);
         assert_eq!(classify("pi", "pi --mode rpc"), None);
+        assert_eq!(classify("pi", "pi --mode json"), None);
+        // Pi rewrites argv to just "pi" after start — argv alone cannot
+        // tell headless from a TUI; discover_script skips ACC-owned pids.
+        assert_eq!(classify("pi", "pi"), Some(Harness::Pi));
         assert_eq!(classify("agent", "agent acp"), None);
         assert_eq!(classify("agent", "agent"), Some(Harness::Cursor));
         assert_eq!(classify("vim", "vim"), None);
