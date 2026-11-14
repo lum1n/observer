@@ -799,6 +799,73 @@ mod tests {
         assert_eq!(t.items()[0].text, "also fix the tests");
     }
 
+    fn queued_items(lines: &str) -> Vec<(ItemKind, String)> {
+        let mut o = Observer::new();
+        let mut t = acc_core::transcript::Transcript::new();
+        for e in o.feed(lines.as_bytes()) {
+            t.apply(&e);
+        }
+        t.items().iter().map(|i| (i.kind, i.text.clone())).collect()
+    }
+
+    #[test]
+    fn queued_prompt_delivery_without_enqueue_shows_once() {
+        let lines = concat!(
+            r#"{"type":"attachment","uuid":"u1","attachment":{"type":"queued_command","prompt":"hello"}}"#,
+            "\n",
+            r#"{"type":"attachment","uuid":"u2","attachment":{"type":"queued_command","prompt":"hello"}}"#,
+            "\n",
+        );
+        // Without an enqueue line nothing is pending, so each delivery shows.
+        let items = queued_items(lines);
+        assert_eq!(items.len(), 2);
+        assert!(
+            items
+                .iter()
+                .all(|(k, t)| *k == ItemKind::UserMessage && t == "hello")
+        );
+    }
+
+    #[test]
+    fn repeated_queued_prompt_pairs_each_show_once() {
+        let enq = r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t1","content":"again"}"#;
+        let del =
+            r#"{"type":"attachment","uuid":"u1","attachment":{"type":"queued_command","prompt":"again"}}"#;
+        let enq2 = r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t2","content":"again"}"#;
+        let del2 =
+            r#"{"type":"attachment","uuid":"u2","attachment":{"type":"queued_command","prompt":"again"}}"#;
+        let lines = format!("{enq}\n{del}\n{enq2}\n{del2}\n");
+        assert_eq!(queued_items(&lines).len(), 2);
+    }
+
+    #[test]
+    fn queued_prompt_ignores_blank_and_local_input() {
+        let lines = concat!(
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t1","content":"   "}"#,
+            "\n",
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t2","content":"<command-name>/clear</command-name>"}"#,
+            "\n",
+            r#"{"type":"attachment","uuid":"u1","attachment":{"type":"queued_command","prompt":"<bash-input>ls</bash-input>"}}"#,
+            "\n",
+        );
+        assert!(queued_items(lines).is_empty());
+    }
+
+    #[test]
+    fn queued_prompt_without_uuid_falls_back_to_timestamp_id() {
+        let lines = concat!(
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t9","content":"x"}"#,
+            "\n",
+        );
+        let mut o = Observer::new();
+        let mut t = acc_core::transcript::Transcript::new();
+        for e in o.feed(lines.as_bytes()) {
+            t.apply(&e);
+        }
+        assert_eq!(t.items().len(), 1);
+        assert_eq!(t.items()[0].id, "queued-t9");
+    }
+
     #[test]
     fn identical_prompts_queued_twice_show_twice() {
         let mut o = Observer::new();
