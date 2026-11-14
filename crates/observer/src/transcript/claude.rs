@@ -471,19 +471,23 @@ impl Observer {
         }
     }
 
-    /// A background agent's `<task-notification>`: its `Agent` call is done.
     /// A prompt typed while the model was mid-turn. The TUI queues it
     /// (`queue-operation`), then hands it over (`queued_command`); show it on
     /// whichever line comes first.
     fn queued_prompt(&mut self, v: &Value, text: &str, out: &mut Vec<Event>) {
-        if let Some(i) = self.queued_prompts.iter().position(|q| q == text) {
-            self.queued_prompts.remove(i);
-            return;
+        let enqueue = str_at(v, "type") == Some("queue-operation");
+        // Only a delivery consumes a pending entry: a second enqueue of the
+        // same text is a new prompt, not the delivery of the first.
+        if !enqueue {
+            if let Some(i) = self.queued_prompts.iter().position(|q| q == text) {
+                self.queued_prompts.remove(i);
+                return;
+            }
         }
         if text.trim().is_empty() || local_input(text) {
             return;
         }
-        if str_at(v, "type") == Some("queue-operation") {
+        if enqueue {
             self.queued_prompts.push(text.to_owned());
         }
         let id = owned(v, "uuid")
@@ -500,6 +504,7 @@ impl Observer {
         );
     }
 
+    /// A background agent's `<task-notification>`: its `Agent` call is done.
     fn task_report(&mut self, text: &str, out: &mut Vec<Event>) {
         let Some((tool, task)) = acc_core::claude::task_notification(text) else {
             return;
@@ -792,6 +797,26 @@ mod tests {
         assert_eq!(t.items().len(), 1);
         assert_eq!(t.items()[0].kind, ItemKind::UserMessage);
         assert_eq!(t.items()[0].text, "also fix the tests");
+    }
+
+    #[test]
+    fn identical_prompts_queued_twice_show_twice() {
+        let mut o = Observer::new();
+        let lines = concat!(
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t1","content":"continue"}"#,
+            "\n",
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t2","content":"continue"}"#,
+            "\n",
+            r#"{"type":"attachment","uuid":"u1","attachment":{"type":"queued_command","prompt":"continue"}}"#,
+            "\n",
+            r#"{"type":"attachment","uuid":"u2","attachment":{"type":"queued_command","prompt":"continue"}}"#,
+            "\n",
+        );
+        let mut t = acc_core::transcript::Transcript::new();
+        for e in o.feed(lines.as_bytes()) {
+            t.apply(&e);
+        }
+        assert_eq!(t.items().len(), 2);
     }
 
     #[test]
