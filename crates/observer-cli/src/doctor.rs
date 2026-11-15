@@ -149,7 +149,8 @@ fn store(h: Harness) -> Option<PathBuf> {
         Harness::Copilot => Some(home.join(copilot::SESSION_STATE)),
         Harness::Cursor => Some(home.join(".cursor/projects")),
         // opencode keeps them in its database: `opencode session list`.
-        Harness::Opencode => None,
+        // agy has no transcript reader yet.
+        Harness::Opencode | Harness::Antigravity => None,
     }
 }
 

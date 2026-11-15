@@ -21,7 +21,16 @@ nothing installed on the hosts: every action is a shell script for an SSH exec c
 | `crates/observer-wasm` | wasm-bindgen bindings for browsers and Node, built into one module with acc-wasm (a test keeps them level with observer-ffi) |
 | `crates/observer-cli` | `observer` command-line tool |
 
-acc is a path dependency: check it out next to this repository (`../acc`).
+acc is a git dependency on its release tag (`v0.4.0`). To build against a local acc checkout,
+patch it in a gitignored `.cargo/config.toml`:
+
+```toml
+[patch."https://github.com/lum1n/acc"]
+acc-core = { path = "../acc/crates/acc-core" }
+acc-ssh = { path = "../acc/crates/acc-ssh" }
+acc-ffi = { path = "../acc/crates/acc-ffi" }
+acc-wasm = { path = "../acc/crates/acc-wasm" }
+```
 
 ## Quick start
 

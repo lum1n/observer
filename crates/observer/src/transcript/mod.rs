@@ -29,7 +29,7 @@ impl Observer {
             Harness::Codex => Some(Self::Codex(codex::Observer::new())),
             Harness::Copilot => Some(Self::Copilot(copilot::Observer::new())),
             Harness::Pi => Some(Self::Pi(pi::Transcript::new())),
-            Harness::Cursor | Harness::Opencode => None,
+            Harness::Cursor | Harness::Opencode | Harness::Antigravity => None,
         }
     }
 

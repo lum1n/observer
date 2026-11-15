@@ -103,7 +103,7 @@ pub fn inputs(harness: Harness, cmd: &Command) -> Result<Vec<Input>, DriverError
 pub fn exit_inputs(harness: Harness) -> Result<Vec<Input>, DriverError> {
     match harness {
         Harness::Pi | Harness::Codex => Ok(submit("/quit")),
-        Harness::Claude | Harness::Copilot | Harness::Opencode => Ok(submit("/exit")),
+        Harness::Claude | Harness::Copilot | Harness::Opencode | Harness::Antigravity => Ok(submit("/exit")),
         // Clear what an interrupt put back in the input first.
         Harness::Cursor => {
             let mut keys = vec![Input::Keys(vec![Key::Ctrl('u')])];
@@ -134,6 +134,7 @@ pub fn launch(harness: Harness, resume: Option<&str>) -> Result<Program, DriverE
         }
         (Harness::Codex, Some(id)) => program.args = vec!["resume".into(), id.into()],
         (Harness::Opencode, Some(id)) => program.args = vec!["--session".into(), id.into()],
+        (Harness::Antigravity, Some(id)) => program.args = vec!["--conversation".into(), id.into()],
         (_, None) => {}
     }
     Ok(program)
@@ -261,6 +262,14 @@ mod tests {
         assert_eq!(
             launch(Harness::Opencode, Some("ses_1")).unwrap().argv(),
             ["opencode", "--session", "ses_1"]
+        );
+        assert_eq!(
+            launch(Harness::Antigravity, Some("conv_1")).unwrap().argv(),
+            ["agy", "--conversation", "conv_1"]
+        );
+        assert_eq!(
+            exit_inputs(Harness::Antigravity).unwrap()[0],
+            Input::Text("/exit".into())
         );
     }
 

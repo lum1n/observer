@@ -230,6 +230,7 @@ impl Takeover {
                 launcher: self.agent.launcher.clone(),
                 worktree: None,
                 sandbox: None,
+                ..Default::default()
             },
         }
     }

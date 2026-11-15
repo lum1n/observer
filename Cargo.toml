@@ -9,11 +9,12 @@ rust-version = "1.88"
 publish = false
 
 [workspace.dependencies]
-# acc is checked out next to this repository.
-acc-core = { path = "../acc/crates/acc-core" }
-acc-ssh = { path = "../acc/crates/acc-ssh" }
-acc-ffi = { path = "../acc/crates/acc-ffi" }
-acc-wasm = { path = "../acc/crates/acc-wasm" }
+# acc comes from its release tag. Apps that build observer next to acc must use the
+# same URL and tag, or Cargo builds two acc-cores with incompatible types.
+acc-core = { git = "https://github.com/lum1n/acc", tag = "v0.4.0" }
+acc-ssh = { git = "https://github.com/lum1n/acc", tag = "v0.4.0" }
+acc-ffi = { git = "https://github.com/lum1n/acc", tag = "v0.4.0" }
+acc-wasm = { git = "https://github.com/lum1n/acc", tag = "v0.4.0" }
 observer = { path = "crates/observer" }
 observer-ssh = { path = "crates/observer-ssh" }
 base64 = "0.23"

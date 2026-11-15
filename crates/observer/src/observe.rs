@@ -230,7 +230,7 @@ impl Observed {
             Harness::Copilot => Some(Reader::Copilot(copilot::Observer::new())),
             Harness::Pi => Some(Reader::Pi(pi::Transcript::new())),
             Harness::Cursor => Some(Reader::Cursor(cursor::Transcript::new())),
-            Harness::Opencode => None,
+            Harness::Opencode | Harness::Antigravity => None,
         });
         // opencode's session comes from its server, not a file.
         let reader = reader.or_else(|| {

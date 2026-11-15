@@ -13,29 +13,15 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
-# acc is a path dependency (`../acc`), so every job checks both repositories
-# out side by side and works in `observer/`.
-defaults:
-  run:
-    working-directory: observer
-
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: observer
-      - uses: actions/checkout@v4
-        with:
-          repository: lum1n/acc
-          path: acc
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: observer
       - run: cargo fmt -p observer -p observer-ssh -p observer-ffi -p observer-wasm -p observer-cli --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -47,16 +33,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: observer
-      - uses: actions/checkout@v4
-        with:
-          repository: lum1n/acc
-          path: acc
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: observer
       - run: cargo test --workspace
 
   # Drives real multiplexers with the commands observer builds.
@@ -67,16 +45,8 @@ jobs:
       ZELLIJ_VERSION: 0.45.1
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: observer
-      - uses: actions/checkout@v4
-        with:
-          repository: lum1n/acc
-          path: acc
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: observer
       - name: Install tmux, screen and zellij
         run: |
           sudo apt-get update
@@ -94,16 +64,8 @@ jobs:
       ACC_REQUIRE_MUX: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: observer
-      - uses: actions/checkout@v4
-        with:
-          repository: lum1n/acc
-          path: acc
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: observer
       - name: Install OpenSSH server and tmux
         run: |
           sudo apt-get update
@@ -114,16 +76,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: observer
-      - uses: actions/checkout@v4
-        with:
-          repository: lum1n/acc
-          path: acc
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: observer
       - name: Python smoke test (acc-ffi and observer-ffi from one library)
         run: |
           cargo build -p observer-ffi --release
@@ -137,18 +91,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: observer
-      - uses: actions/checkout@v4
-        with:
-          repository: lum1n/acc
-          path: acc
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: observer
       - run: cargo build -p observer-wasm --release --target wasm32-unknown-unknown
       - uses: taiki-e/install-action@v2
         with:

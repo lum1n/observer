@@ -61,7 +61,7 @@ ps -eo pid=,etime=,args= 2>/dev/null | while read -r pid etime args; do
   set -f; set -- $args; set +f
   b=${1##*/}
   case $b in node|bun|deno|python*) b=${2##*/} ;; esac
-  case $b in claude|codex|agent|cursor-agent|copilot|pi|opencode) ;; *) continue ;; esac
+  case $b in claude|codex|agent|cursor-agent|copilot|pi|opencode|agy) ;; *) continue ;; esac
   # ACC's detached harnesses: stdin is the session FIFO, and their pid is
   # recorded under ~/.acc/s/*/pid. Pi rewrites its argv to just "pi", so
   # headless `--mode rpc` is invisible to classify — skip them here.
@@ -169,6 +169,7 @@ pub fn classify(program: &str, args: &str) -> Option<Harness> {
         "copilot" => Harness::Copilot,
         "pi" => Harness::Pi,
         "opencode" => Harness::Opencode,
+        "agy" => Harness::Antigravity,
         _ => return None,
     };
     let words: Vec<&str> = args.split_whitespace().collect();
@@ -182,6 +183,7 @@ pub fn classify(program: &str, args: &str) -> Option<Harness> {
             .windows(2)
             .any(|w| w == ["--mode", "rpc"] || w == ["--mode", "json"]),
         Harness::Opencode => has("acp") || has("serve") || has("run"),
+        Harness::Antigravity => has("acp") || has("-p") || has("--output-format"),
     };
     (!headless).then_some(harness)
 }
@@ -338,6 +340,7 @@ fn program_names(h: Harness) -> &'static [&'static str] {
         Harness::Copilot => &["copilot"],
         Harness::Pi => &["pi"],
         Harness::Opencode => &["opencode"],
+        Harness::Antigravity => &["agy"],
     }
 }
 
@@ -616,6 +619,9 @@ P\t%3\twork:2\t/tmp/tmux-1000/default\n";
         assert_eq!(classify("pi", "pi"), Some(Harness::Pi));
         assert_eq!(classify("agent", "agent acp"), None);
         assert_eq!(classify("agent", "agent"), Some(Harness::Cursor));
+        assert_eq!(classify("agy", "agy"), Some(Harness::Antigravity));
+        assert_eq!(classify("agy", "agy -p hi"), None);
+        assert_eq!(classify("agy", "agy --output-format stream-json"), None);
         assert_eq!(classify("vim", "vim"), None);
     }
 

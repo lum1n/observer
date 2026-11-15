@@ -478,11 +478,9 @@ impl Observer {
         let enqueue = str_at(v, "type") == Some("queue-operation");
         // Only a delivery consumes a pending entry: a second enqueue of the
         // same text is a new prompt, not the delivery of the first.
-        if !enqueue {
-            if let Some(i) = self.queued_prompts.iter().position(|q| q == text) {
-                self.queued_prompts.remove(i);
-                return;
-            }
+        if !enqueue && let Some(i) = self.queued_prompts.iter().position(|q| q == text) {
+            self.queued_prompts.remove(i);
+            return;
         }
         if text.trim().is_empty() || local_input(text) {
             return;
