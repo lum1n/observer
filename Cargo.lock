@@ -4,20 +4,21 @@ version = 4
 
 [[package]]
 name = "acc-core"
-version = "0.4.0"
-source = "git+https://github.com/lum1n/acc?tag=v0.4.0#092f05807208ccdc48af0b05fe145f7ccdba92b4"
+version = "0.5.0"
+source = "git+https://github.com/lum1n/acc?tag=v0.5.0#7ed1dd133457336a2c18043955562c65e26db5e6"
 dependencies = [
  "base64",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
  "thiserror",
 ]
 
 [[package]]
 name = "acc-ffi"
-version = "0.4.0"
-source = "git+https://github.com/lum1n/acc?tag=v0.4.0#092f05807208ccdc48af0b05fe145f7ccdba92b4"
+version = "0.5.0"
+source = "git+https://github.com/lum1n/acc?tag=v0.5.0#7ed1dd133457336a2c18043955562c65e26db5e6"
 dependencies = [
  "acc-core",
  "acc-loadout",
@@ -29,8 +30,8 @@ dependencies = [
 
 [[package]]
 name = "acc-loadout"
-version = "0.4.0"
-source = "git+https://github.com/lum1n/acc?tag=v0.4.0#092f05807208ccdc48af0b05fe145f7ccdba92b4"
+version = "0.5.0"
+source = "git+https://github.com/lum1n/acc?tag=v0.5.0#7ed1dd133457336a2c18043955562c65e26db5e6"
 dependencies = [
  "acc-core",
  "serde",
@@ -40,8 +41,8 @@ dependencies = [
 
 [[package]]
 name = "acc-ssh"
-version = "0.4.0"
-source = "git+https://github.com/lum1n/acc?tag=v0.4.0#092f05807208ccdc48af0b05fe145f7ccdba92b4"
+version = "0.5.0"
+source = "git+https://github.com/lum1n/acc?tag=v0.5.0#7ed1dd133457336a2c18043955562c65e26db5e6"
 dependencies = [
  "acc-core",
  "rand",
@@ -52,8 +53,8 @@ dependencies = [
 
 [[package]]
 name = "acc-wasm"
-version = "0.4.0"
-source = "git+https://github.com/lum1n/acc?tag=v0.4.0#092f05807208ccdc48af0b05fe145f7ccdba92b4"
+version = "0.5.0"
+source = "git+https://github.com/lum1n/acc?tag=v0.5.0#7ed1dd133457336a2c18043955562c65e26db5e6"
 dependencies = [
  "acc-core",
  "acc-loadout",
