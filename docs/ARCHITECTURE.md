@@ -4,7 +4,7 @@
 
 - **Sessions acc didn't start.** acc drives the sessions it launches and knows nothing else.
   observer covers the TUIs of every harness acc drives (Claude Code, Codex, Copilot CLI, Cursor
-  Agent, opencode, pi) that a user started themselves, in a terminal or a tmux, zellij, screen or Rex pane: find them, follow them,
+  Agent, opencode, pi, Antigravity) that a user started themselves, in a terminal or a tmux, zellij, screen or Rex pane: find them, follow them,
   co-drive their panes, and take them over into ordinary acc sessions.
 - **acc's vocabulary.** Everything observer reports is acc's: `acc_core::Event`s,
   `session::Update`s with acc's `Transcript`, `SessionState` with a ranked source, and a
