@@ -441,11 +441,16 @@ fn native_id(a: &ForeignAgent) -> Option<String> {
         return Some(id);
     }
     let words: Vec<&str> = a.args.split_whitespace().collect();
-    // `-s` is opencode's session; Codex's is its sandbox.
-    let short_session = (a.harness == Harness::Opencode).then_some("-s");
+    // `-s` is opencode's session; Codex's is its sandbox. agy resumes
+    // with `--conversation`.
+    let own_flag = match a.harness {
+        Harness::Opencode => Some("-s"),
+        Harness::Antigravity => Some("--conversation"),
+        _ => None,
+    };
     for flag in ["--resume", "-r", "--session-id", "--session", "resume"]
         .into_iter()
-        .chain(short_session)
+        .chain(own_flag)
     {
         if let Some(i) = words.iter().position(|w| *w == flag)
             && let Some(v) = words.get(i + 1)
@@ -609,6 +614,43 @@ P\t%3\twork:2\t/tmp/tmux-1000/default\n";
     }
 
     #[test]
+    fn antigravity_tui_is_found_with_its_conversation_and_sandbox() {
+        let us = '\u{1f}';
+        let out = format!(
+            "A\t60\tagy\t00:10\t/usr/bin/agy --conversation conv_1\n\
+             V\t60\t/usr/bin/agy{us}--conversation{us}conv_1{us}\n\
+             W\t60\t59\tbwrap{us}--{us}agy{us}--conversation{us}conv_1{us}\n\
+             W\t60\t58\tzsh{us}\n\
+             C\t60\t/w\n\
+             A\t61\tagy\t00:10\tagy acp\n\
+             A\t62\tagy\t00:10\tagy\n"
+        );
+        let found = parse_discover(&out);
+        assert_eq!(found.len(), 2, "headless agy acp is skipped");
+        let a = &found[0];
+        assert_eq!((a.harness, a.pid), (Harness::Antigravity, 60));
+        assert_eq!(
+            a.native_id.as_deref(),
+            Some("conv_1"),
+            "agy has no transcript: the id comes from argv"
+        );
+        let l = a.launcher.as_ref().unwrap();
+        assert_eq!(
+            (l.prefix.as_slice(), l.program.as_deref()),
+            (&["bwrap".to_owned(), "--".to_owned()][..], Some("agy"))
+        );
+        assert!(l.args.is_empty(), "only Claude's TUI flags carry over");
+        // A fresh agy TUI has no conversation id until one can be read.
+        assert_eq!(found[1].native_id, None);
+    }
+
+    #[test]
+    fn conversation_flag_is_only_agys_session() {
+        let found = parse_discover("A\t70\tclaude\t00:10\tclaude --conversation x\n");
+        assert_eq!(found[0].native_id, None);
+    }
+
+    #[test]
     fn classify_skips_headless_modes() {
         assert_eq!(classify("codex", "codex"), Some(Harness::Codex));
         assert_eq!(classify("codex", "codex app-server"), None);
@@ -622,6 +664,11 @@ P\t%3\twork:2\t/tmp/tmux-1000/default\n";
         assert_eq!(classify("agy", "agy"), Some(Harness::Antigravity));
         assert_eq!(classify("agy", "agy -p hi"), None);
         assert_eq!(classify("agy", "agy --output-format stream-json"), None);
+        assert_eq!(classify("agy", "agy acp"), None);
+        assert_eq!(
+            classify("agy", "agy --conversation c1"),
+            Some(Harness::Antigravity)
+        );
         assert_eq!(classify("vim", "vim"), None);
     }
 
