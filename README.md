@@ -2,10 +2,11 @@
 
 Harness sessions [acc](https://github.com/lum1n/acc) didn't start. acc drives the sessions it
 launches; observer handles the rest: the TUIs of every harness acc drives (Claude Code, Codex,
-Copilot CLI, Cursor Agent, opencode and pi) that a user started themselves, in a terminal or a
+Copilot CLI, Cursor Agent, opencode, pi and Antigravity) that a user started themselves, in a terminal or a
 tmux, zellij, screen or Rex pane. It finds them, follows them through the transcripts the harnesses
 keep (opencode's through its own server), reads their screens, types into their panes, and takes
-them over into ordinary acc sessions, which acc then drives like any other.
+them over into ordinary acc sessions, which acc then drives like any other. Antigravity (`agy`) has
+no transcript reader yet: it is discovered, typed into and taken over, but not followed.
 
 Everything it reports is in acc's vocabulary (events, transcript items, states, launch requests),
 so a client shows a foreign session with the same code as an acc session. Like acc, it needs
