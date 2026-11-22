@@ -60,5 +60,7 @@ mod tests {
     fn observer_exists_for_file_backed_harnesses() {
         assert!(Observer::new(Harness::Claude).is_some());
         assert!(Observer::new(Harness::Cursor).is_none());
+        assert!(Observer::new(Harness::Opencode).is_none());
+        assert!(Observer::new(Harness::Antigravity).is_none(), "no agy reader yet");
     }
 }

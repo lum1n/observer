@@ -274,6 +274,35 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_launches_resumes_and_hands_back() {
+        assert_eq!(launch(Harness::Antigravity, None).unwrap().argv(), ["agy"]);
+        assert_eq!(
+            resume_inputs(Harness::Antigravity, "conv_1").unwrap(),
+            [
+                Input::Text("agy --conversation conv_1".into()),
+                Input::Keys(vec![Key::Enter])
+            ]
+        );
+        let launcher = acc_core::harness::Launcher {
+            prefix: vec!["bwrap".into(), "--".into()],
+            program: Some("/opt/agy".into()),
+            args: Vec::new(),
+        };
+        assert_eq!(
+            resume_argv(Harness::Antigravity, "conv_1", Some(&launcher)).unwrap(),
+            ["bwrap", "--", "/opt/agy", "--conversation", "conv_1"]
+        );
+        assert_eq!(
+            inputs(Harness::Antigravity, &Command::prompt("hi")).unwrap(),
+            [Input::Text("hi".into()), Input::Keys(vec![Key::Enter])]
+        );
+        assert_eq!(
+            exit_inputs(Harness::Antigravity).unwrap(),
+            [Input::Text("/exit".into()), Input::Keys(vec![Key::Enter])]
+        );
+    }
+
+    #[test]
     fn interrupt_and_exit_per_tui() {
         let interrupt = |h| inputs(h, &Command::Interrupt).unwrap();
         assert_eq!(interrupt(Harness::Copilot), [Input::Keys(vec![Key::Ctrl('c')])]);
