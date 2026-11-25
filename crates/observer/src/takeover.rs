@@ -36,7 +36,8 @@ pub enum TakeoverInput {
 /// What the client should do next.
 // Built once per action; boxing a launch request isn't worth the churn.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Not `Eq`: a launch request's spend cap is a float.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TakeoverAction {
     /// Run this on the host, then report `Ran`.

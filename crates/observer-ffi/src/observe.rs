@@ -304,7 +304,8 @@ pub enum AccTakeoverInput {
 /// What the client should do next.
 // Built once per action; boxing a launch request isn't worth the churn.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+// Not `Eq`: a launch request's spend cap is a float.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum AccTakeoverAction {
     Run {
         exec: AccExec,

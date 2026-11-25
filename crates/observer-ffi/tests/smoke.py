@@ -59,7 +59,7 @@ def main() -> None:
     events = obs.TranscriptObserver(acc.Harness.CLAUDE).feed(transcript, 1_000)
     assert any(isinstance(e, acc.Event.ITEM_DELTA) for e in events)
     try:
-        obs.TranscriptObserver(acc.Harness.COPILOT)
+        obs.TranscriptObserver(acc.Harness.OPENCODE)
         raise AssertionError("expected Unsupported")
     except acc.AccError.Unsupported:
         pass
