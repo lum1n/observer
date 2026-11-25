@@ -42,7 +42,7 @@ assert.ok(observed.state());
 
 const events = new obs.TranscriptObserver("claude").feed(transcript, 1000);
 assert.ok(events.some((e) => e.type === "item_delta"));
-assert.throws(() => new obs.TranscriptObserver("copilot"), /doesn't read/);
+assert.throws(() => new obs.TranscriptObserver("opencode"), /doesn't read/);
 
 const takeover = new obs.AccTakeover(agent, agent.native_id, false);
 const close = takeover.next({ type: "tick", now_ms: 0, safe: true });
